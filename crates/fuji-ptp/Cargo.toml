@@ -1,0 +1,8 @@
+[package]
+name = "fuji-ptp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ptp-core = { path = "../ptp-core" }

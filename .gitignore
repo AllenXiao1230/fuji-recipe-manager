@@ -1,0 +1,10 @@
+/target/
+/node_modules/
+/src-tauri/target/
+/src-tauri/gen/
+/dist/
+*.tsbuildinfo
+/vite.config.js
+/vite.config.d.ts
+/work/
+.DS_Store

@@ -1,0 +1,10 @@
+[package]
+name = "fuji-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+camera-fujifilm = { path = "../../crates/camera-fujifilm" }
+usb-transport = { path = "../../crates/usb-transport" }
+ptp-core = { path = "../../crates/ptp-core" }

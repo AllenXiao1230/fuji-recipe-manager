@@ -1,0 +1,16 @@
+[package]
+name = "usb-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["nusb-backend"]
+nusb-backend = ["dep:nusb", "dep:futures-lite", "dep:ptp-core"]
+
+[dependencies]
+camera-core = { path = "../camera-core" }
+nusb = { version = "0.1.13", optional = true }
+futures-lite = { version = "2", optional = true }
+ptp-core = { path = "../ptp-core", optional = true }
+thiserror.workspace = true

@@ -1,5 +1,81 @@
 # Release status
 
+## Latest X-M5 firmware 1.30 hardware verification
+
+The read-only property scan reported 61 DeviceInfo-advertised properties and
+58 readable values. Reversible C4 tests verified the existing Recipe write
+set (61/61 cases), plus image size (captured-value write), image quality
+(captured-value write), Smooth Skin Effect (Off/Weak/Strong), Color Space
+(sRGB/Adobe RGB), and Color Temperature (2500 K/6500 K/10000 K). Every
+successful C4 case read back and restored its captured value, and the active
+slot was restored to C1.
+
+Long Exposure NR (`D1A3`) and Monochromatic Color Warm/Cool and
+Green/Magenta (`D193`/`D194`) were rejected with PTP `201C` for every tested
+candidate encoding, so they remain write-locked. Ten identified global
+controls (white balance, sharpness, film simulation, color temperature, white
+balance fine tune, noise reduction, image quality, recording mode, grain
+effect, and focus metering) accepted a write of their current value and read
+back unchanged. This confirms only their transport path; alternate-value
+encodings and global-setting safety are not yet unlocked.
+
+The 2026-09-02 retest repeated those outcomes on C4: Long Exposure NR Off and
+On were both rejected and a follow-up read confirmed the captured value did
+not change. With ACROS selected, both monochrome properties rejected each
+direct and ×10 candidate at both test ends; captured values were restored.
+The current-value-only global test passed 10/10 properties, but is evidence of
+transport acceptance only and does not unlock alternate values.
+
+The same physical X-M5 test session manually set C4 Image Size to `L 16:9`,
+captured `D18E=08 00`, and then passed a dedicated write → read-back →
+captured-value restore test with active-slot recovery. `L 16:9` is therefore
+the second and only additional Image Size payload unlocked for firmware 1.30.
+
+A subsequent C4 image-payload session set and captured `L 1:1` (`D18E=09 00`)
+and `NORMAL` (`D18F=03 00`). Both values passed independent write → read-back
+→ captured-value restore checks with active-slot recovery, and are now enabled
+alongside the previously verified payloads.
+
+The following C4 session captured `FINE+RAW` as `D18F=04 00` and passed the
+same independent write → read-back → captured-value restore and active-slot
+recovery check. It is now enabled; `NORMAL+RAW` and `RAW` remain unverified.
+
+`NORMAL+RAW` was then captured as `D18F=05 00` on C4 and passed the same
+reversible hardware test, including active-slot recovery. The final standalone
+`RAW` quality was captured as `D18F=01 00` and also passed the same test. All
+displayed Image Quality choices are now enabled for the X-M5 1.30 record.
+
+`M 3:2` was then captured as `D18E=04 00` on C4 and passed the same reversible
+write → read-back → captured-value restore and active-slot recovery check. It
+is now enabled alongside the three previously verified L-size payloads.
+
+`M 16:9` was then captured as `D18E=05 00` on C4 and passed the same reversible
+hardware test. The remaining crop-dependent choices require a separate
+drive-mode capability before they can be verified or enabled.
+
+`M 1:1` was then captured as `D18E=06 00` on C4 and passed the same reversible
+hardware test. It is now enabled alongside the other verified M-size payloads.
+
+`S 3:2` was then captured as `D18E=01 00` on C4 and passed the same reversible
+hardware test. It is now enabled alongside the verified M- and L-size payloads.
+
+`S 16:9` was then captured as `D18E=02 00` on C4 and passed the same reversible
+hardware test. It is now enabled alongside the other verified standard sizes.
+
+`S 1:1` was then captured as `D18E=03 00` on C4 and passed the same reversible
+hardware test. All nine standard S/M/L Image Size choices are now enabled.
+
+The app now uses Fujifilm’s official names for 1.25× crop sizes: `P 3:2`,
+`P 16:9`, and `P 1:1`. Older local values named `M … (1.25× crop)` are migrated
+on load. They remain mode-dependent and write-blocked until the corresponding
+Sports Finder or high-speed-burst prerequisite is represented and verified.
+
+A follow-up C4 reversible enum run passed 15/15 candidate values: Dynamic
+Range Auto, the twelve remaining non-Auto Film Simulations, and White Balance
+White Priority / Ambience Priority. Each test wrote its target value, read it
+back, restored the captured C4 value, and restored the active C slot. These
+values are now enabled in the X-M5 codec and GUI preflight.
+
 ## Implemented
 
 - Cross-platform Tauri 2 + React desktop shell.
@@ -16,7 +92,15 @@
 - X-M5 firmware 1.30 reversible C2 tests for film simulation (`D192`), Color Chrome (`D196`), Chrome FX Blue (`D197`), white-balance mode and shifts (`D199`, `D19A`, `D19B`), high-ISO NR (`D1A1`), and grain (`D195`).
 - Physical X-M5 GUI write transaction verified end-to-end: a 15-field C4 Recipe write created a durable pre-write SQLite backup and journal, read every written field back, then restored the backup through the in-app confirmation dialog with read-back verification.
 - Recovery-backup list and explicit X-M5 restore action with an in-app confirmation dialog and read-back verification.
-- macOS `.app` bundle build verified locally.
+- Per-Recipe raw C-slot snapshot capture for the exact X-M5 record. It preserves readable `D18D…D1A5` values and records unreadable codes, while keeping every raw byte outside both the writer and recovery allow-list.
+- Controlled CLI candidate capture for unverified Image Size / Image Quality values. It requires a value to be selected manually on a disposable C slot, reads only the reported raw value, restores the active C slot, and keeps the capability matrix locked pending a separate reversible verification.
+- Fixed desktop sidebar with an independent workspace scroll area, local Recipe-to-C-slot labels, and installed-preset synchronization by exact preset name.
+- Per-slot X-M5 clear action: creates the same durable backup and journal as an import, clears the name, writes only neutral values for the 14 verified Recipe properties, verifies every value, and never claims to factory-reset unverified camera settings.
+- macOS `.app` bundle build verified locally. After removing build-output-only Finder/file-provider extended attributes, the App passed strict ad-hoc `codesign` verification; the repackaged `Fuji Recipe Manager_0.1.0_aarch64-adhoc.dmg` passed checksum verification and its mounted App passed the same check. It is deliberately not Developer ID-signed or notarized, and Gatekeeper rejects it as expected.
+- Versioned capability-record resolution requires an exact USB ID, model, and firmware match. All other Fujifilm cameras and firmware versions now have a dedicated `ptp-scan-readonly` path and remain probe-only.
+- `.FP1/.FP2/.FP3` local import/export with safe unmapped-field retention and serial-number removal. X RAW Studio round-trip compatibility is not yet a release claim.
+- JPEG/RAF metadata-to-Recipe import with per-field recognised/unavailable results. It is read-only; the present development implementation requires locally installed ExifTool.
+- RAF preview offline preflight and cleanup-oriented Rust transaction abstraction. No vendor camera transport adapter, RAF upload, conversion, or preview JPEG is implemented yet.
 
 ## Still required before a production camera importer release
 
@@ -28,6 +112,9 @@ The following work deliberately remains gated on physical hardware for each mode
 4. Map every human-readable setting to its X-M5 property and value encoding.
 5. Map every Recipe parameter to a model- and firmware-verified property encoding, then exercise one disposable-slot Recipe-field write followed by byte-for-byte read-back verification.
 6. Repeat the completed X-M5 GUI-write/recovery checklist and installer validation on Windows.
+7. Bundle, license-review, and test the JPEG/RAF metadata adapter on macOS and Windows; do not release a build that depends on an arbitrary user-installed `exiftool`.
+8. Validate generated `.FP1/.FP2/.FP3` profiles by importing them into the target X RAW Studio version and record every preserved/unmapped field.
+9. Derive and hardware-validate a model-specific RAF upload/conversion/download/abort adapter before enabling camera-side RAF preview.
 
 Until all six gates pass for a model, its write button must remain disabled. X-M5 is an experimental recovery-capable path, not a production-supported importer.
 

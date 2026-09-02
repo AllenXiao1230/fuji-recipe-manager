@@ -60,9 +60,9 @@ export const imageSizes = [
   "S_3_2",
   "S_16_9",
   "S_1_1",
-  "M_3_2_1_25X_CROP",
-  "M_16_9_1_25X_CROP",
-  "M_1_1_1_25X_CROP",
+  "P_3_2_1_25X_CROP",
+  "P_16_9_1_25X_CROP",
+  "P_1_1_1_25X_CROP",
 ] as const;
 export const imageQualities = [
   "FINE",
@@ -107,6 +107,10 @@ export const isoSensitivities = [
   "ISO_25600",
   "ISO_51200",
 ] as const;
+export const isoAutoMaximums = [
+  80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600,
+  2000, 2500, 3200, 4000, 5000, 6400, 8000, 10000, 12800, 25600, 51200,
+] as const;
 export const meteringModes = [
   "MULTI",
   "SPOT",
@@ -144,15 +148,30 @@ export const xm5WritableFilmSimulations = [
   "PROVIA",
   "VELVIA",
   "ASTIA",
+  "PRO_NEG_HI",
+  "PRO_NEG_STD",
   "CLASSIC_CHROME",
   "ACROS",
+  "ACROS_YE",
+  "ACROS_R",
+  "ACROS_G",
+  "MONOCHROME",
+  "MONOCHROME_YE",
+  "MONOCHROME_R",
+  "MONOCHROME_G",
+  "SEPIA",
   "ETERNA",
+  "ETERNA_BLEACH_BYPASS",
   "CLASSIC_NEGATIVE",
+  "NOSTALGIC_NEGATIVE",
   "REALA_ACE",
 ] as const;
-export const xm5WritableDynamicRanges = ["DR100", "DR200", "DR400"] as const;
+export const xm5WritableDynamicRanges = ["AUTO", "DR100", "DR200", "DR400"] as const;
 export const xm5WritableWhiteBalances = [
+  "WHITE_PRIORITY",
   "AUTO",
+  "AMBIENCE_PRIORITY",
+  "COLOR_TEMPERATURE",
   "DAYLIGHT",
   "INCANDESCENT",
   "UNDERWATER",
@@ -160,6 +179,24 @@ export const xm5WritableWhiteBalances = [
   "FLUORESCENT_2",
   "FLUORESCENT_3",
   "SHADE",
+] as const;
+export const xm5WritableImageSizes = [
+  "L_3_2",
+  "L_16_9",
+  "L_1_1",
+  "M_3_2",
+  "M_16_9",
+  "M_1_1",
+  "S_3_2",
+  "S_16_9",
+  "S_1_1",
+] as const;
+export const xm5WritableImageQualities = [
+  "FINE",
+  "NORMAL",
+  "FINE_PLUS_RAW",
+  "NORMAL_PLUS_RAW",
+  "RAW",
 ] as const;
 
 export interface RecipeSettings {
@@ -177,6 +214,16 @@ export interface RecipeSettings {
   };
   colorChromeEffect: (typeof strengths)[number];
   colorChromeFxBlue: (typeof strengths)[number];
+  smoothSkinEffect: (typeof strengths)[number];
+  /**
+   * Stored for FP/Recipe interchange only on X-M5 firmware 1.30. The camera
+   * rejected every tested PTP encoding for these controls, so the X-M5 codec
+   * blocks non-zero values rather than silently dropping them.
+   */
+  monochromaticColor: {
+    warmCool: number;
+    magentaGreen: number;
+  };
   dRangePriority: (typeof dRangePriorities)[number];
   portraitEnhancer: (typeof portraitEnhancerLevels)[number];
   longExposureNoiseReduction: (typeof onOff)[number];
@@ -196,12 +243,51 @@ export interface RecipeSettings {
 
 export interface ShootingSettings {
   isoSensitivity: (typeof isoSensitivities)[number];
+  isoAutoMaximum: (typeof isoAutoMaximums)[number];
   exposureCompensation: number;
   meteringMode: (typeof meteringModes)[number];
   focusMode: (typeof focusModes)[number];
   afMode: (typeof afModes)[number];
   driveMode: (typeof driveModes)[number];
   shutterType: (typeof shutterTypes)[number];
+}
+
+/**
+ * Loss-aware interchange metadata. It is optional so existing JSON Recipes
+ * remain valid, but FP imports retain their X RAW Studio identity and any
+ * unmodelled XML properties for a later FP round trip. Serial numbers are
+ * deliberately excluded before this object is persisted.
+ */
+export interface FpInterchangeMetadata {
+  format: "FP1" | "FP2" | "FP3";
+  application: string;
+  profileVersion: string;
+  device: string;
+  deviceVersion: string;
+  sourceProperties: Array<{ name: string; value: string }>;
+  unmappedProperties: Array<{ name: string; value: string }>;
+}
+
+/**
+ * A byte-for-byte record of the readable vendor PTP properties in one custom
+ * slot. It is intentionally an interchange/audit artifact, not a write
+ * payload: unknown raw values must never flow into the camera writer.
+ */
+export interface RawPtpPresetSnapshot {
+  manufacturer: "FUJIFILM";
+  model: string;
+  firmware: string;
+  usbId: string;
+  slot: number;
+  capturedAt: string;
+  restorationPolicy: "read_only_preserved";
+  properties: Array<{ code: string; valueHex: string }>;
+  unreadablePropertyCodes: string[];
+}
+
+export interface RecipeInteroperability {
+  fp?: FpInterchangeMetadata;
+  rawPtpPresetSnapshot?: RawPtpPresetSnapshot;
 }
 
 export interface Recipe {
@@ -218,6 +304,7 @@ export interface Recipe {
     author: string;
     url: string;
   };
+  interoperability?: RecipeInteroperability;
   settings: RecipeSettings;
   shootingSettings: ShootingSettings;
 }
@@ -234,6 +321,25 @@ export function xm5WriteBlockers(settings: RecipeSettings): string[] {
     blockers.push("Dynamic Range");
   if (!xm5WritableWhiteBalances.includes(settings.whiteBalance.mode as never))
     blockers.push("White Balance");
+  if (
+    settings.whiteBalance.mode === "COLOR_TEMPERATURE" &&
+    (settings.whiteBalance.colorTemperatureK < 2500 ||
+      settings.whiteBalance.colorTemperatureK > 10000 ||
+      settings.whiteBalance.colorTemperatureK % 10 !== 0)
+  )
+    blockers.push("Color Temperature");
+  if (!strengths.includes(settings.smoothSkinEffect))
+    blockers.push("Smooth Skin Effect");
+  if (
+    settings.monochromaticColor.warmCool !== 0 ||
+    settings.monochromaticColor.magentaGreen !== 0
+  )
+    blockers.push("Monochromatic Color");
+  if (!colorSpaces.includes(settings.colorSpace)) blockers.push("Color Space");
+  if (!xm5WritableImageSizes.includes(settings.imageSize as never))
+    blockers.push("Image Size");
+  if (!xm5WritableImageQualities.includes(settings.imageQuality as never))
+    blockers.push("Image Quality");
   return blockers;
 }
 
@@ -244,6 +350,8 @@ export const emptySettings: RecipeSettings = {
   grain: { strength: "OFF", size: "SMALL" },
   colorChromeEffect: "OFF",
   colorChromeFxBlue: "OFF",
+  smoothSkinEffect: "OFF",
+  monochromaticColor: { warmCool: 0, magentaGreen: 0 },
   dRangePriority: "OFF",
   portraitEnhancer: "OFF",
   longExposureNoiseReduction: "OFF",
@@ -263,6 +371,7 @@ export const emptySettings: RecipeSettings = {
 
 export const emptyShootingSettings: ShootingSettings = {
   isoSensitivity: "AUTO_1",
+  isoAutoMaximum: 6400,
   exposureCompensation: 0,
   meteringMode: "MULTI",
   focusMode: "SINGLE_AF",

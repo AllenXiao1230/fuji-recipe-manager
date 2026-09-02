@@ -6,6 +6,7 @@ members = [
   "crates/usb-transport",
   "crates/camera-xm5",
   "crates/camera-fujifilm",
+  "crates/raf-preview",
   "apps/fuji-test",
   "src-tauri",
 ]

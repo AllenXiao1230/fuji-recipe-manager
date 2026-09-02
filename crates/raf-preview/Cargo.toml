@@ -1,0 +1,9 @@
+[package]
+name = "raf-preview"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+camera-core = { path = "../camera-core" }
+serde = { version = "1", features = ["derive"] }

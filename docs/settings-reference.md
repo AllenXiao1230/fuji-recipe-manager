@@ -17,12 +17,29 @@ The Recipe format includes the following official X-M5 groups:
   Temperature (2500–10000 K, 10 K increments), Daylight, Shade, three
   fluorescent types, Incandescent, and Underwater
 - Dynamic Range (AUTO/100%/200%/400%), D Range Priority, Highlight and
-  Shadow Tone (-4 to +4 in 0.5 steps), other tone controls,
+  Shadow Tone (-2 to +4 in 0.5 steps on the X-M5), other tone controls,
   Portrait Enhancer LV, Clarity, Long Exposure NR, Lens Modulation Optimizer,
   and Color Space
 - Still shooting context: ISO (AUTO 1–3 and the X-M5 standard/extended range),
   exposure compensation, photometry, focus mode, AF mode, drive mode, and
   shutter type
+
+## Display and import terminology
+
+Internal Recipe JSON stores stable English identifiers such as
+`CLASSIC_CHROME` and `WHITE_PRIORITY`. In the Traditional-Chinese interface,
+every available setting value is displayed in Traditional Chinese; parameter
+labels remain Chinese plus English (for example, `軟片模擬 Film Simulation`).
+The editor uses the X-M5 manual's terminology and values, including the
+published image dimensions, white-balance light-source names, and the
+film-simulation names. Pasted Recipe text accepts the canonical identifier,
+the official English label, or the displayed Traditional-Chinese value for the
+options currently understood by the parser.
+
+The UI also calls out three X-M5 dependencies from the manual without silently
+changing the stored Recipe: HEIF uses sRGB and disables Clarity; D Range
+Priority automatically adjusts Dynamic Range and Tone Curve; DR 200% and
+DR 400% require ISO 320 and ISO 640 respectively.
 
 ## Camera-write boundary
 
@@ -33,6 +50,14 @@ model/firmware-specific encoding, read-back check, and verified rollback.
 Unvalidated values fail before any write is sent. This prevents a complete UI
 option list from being mistaken for evidence that every Fujifilm body exposes
 the same USB property or encoding.
+
+For X-M5 firmware 1.30, the current physical test record verified each
+currently writable Recipe field. Enumerated controls were tested across all
+supported values; numeric controls were tested at their minimum, neutral, and
+maximum. Grain Off requires a two-step write to retain the requested Small or
+Large size before the Off command. Highlight and Shadow below -2.0 are
+rejected by the camera with PTP `201C`, so the editor and writer limit those
+two controls to -2.0 through +4.0 in 0.5 steps.
 
 ## Sources
 

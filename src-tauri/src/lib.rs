@@ -1,5 +1,7 @@
 use std::{
     fs,
+    path::Path,
+    process::Command,
     sync::{
         atomic::{AtomicU64, Ordering},
         Mutex,
@@ -46,6 +48,9 @@ struct PtpDeviceInfoResult {
     manufacturer: String,
     model: String,
     device_version: String,
+    capability_state: String,
+    capability_record_id: Option<String>,
+    capability_next_action: String,
 }
 
 #[derive(Serialize)]
@@ -68,11 +73,35 @@ struct SlotSelectionResult {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RecipeWriteResult {
+    usb_id: String,
     slot: u16,
     verified_properties: Vec<String>,
     backup_id: String,
     journal_id: String,
     preset_name: String,
+}
+
+/// Read-only preservation data for a single C slot. The values are emitted as
+/// display-safe hexadecimal strings and are never accepted by a write command.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RawPtpPresetSnapshot {
+    manufacturer: &'static str,
+    model: String,
+    firmware: String,
+    usb_id: String,
+    slot: u16,
+    captured_at: String,
+    restoration_policy: &'static str,
+    properties: Vec<RawPtpPresetSnapshotProperty>,
+    unreadable_property_codes: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RawPtpPresetSnapshotProperty {
+    code: String,
+    value_hex: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +147,32 @@ struct InstalledPreset {
     name: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageRecipeFieldStatus {
+    key: String,
+    status: String,
+    detail: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageRecipeImport {
+    file_name: String,
+    model: String,
+    settings: serde_json::Value,
+    shooting_settings: serde_json::Value,
+    field_statuses: Vec<ImageRecipeFieldStatus>,
+    warnings: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RafPreviewStageResult {
+    state: raf_preview::RafPreviewState,
+    recovery_action: Option<String>,
+}
+
 #[tauri::command]
 fn discover_cameras() -> Result<Vec<CameraDiscovery>, String> {
     usb_transport::PlatformUsbBackend
@@ -154,9 +209,16 @@ fn app_status() -> &'static str {
 }
 
 #[tauri::command]
+fn xm5_capability_record() -> camera_xm5::Xm5CapabilityRecord {
+    camera_xm5::capability_record().clone()
+}
+
+#[tauri::command]
 fn probe_camera_device_info(usb_id: String) -> Result<PtpDeviceInfoResult, String> {
     let id = parse_usb_id(&usb_id)?;
     let probe = usb_transport::probe_ptp_device_info(id).map_err(|error| error.to_string())?;
+    let capability =
+        camera_fujifilm::resolve_capability_record(id, &probe.model, &probe.device_version);
     Ok(PtpDeviceInfoResult {
         usb_id: id.to_string(),
         interface_number: probe.interface_number,
@@ -167,7 +229,583 @@ fn probe_camera_device_info(usb_id: String) -> Result<PtpDeviceInfoResult, Strin
         manufacturer: probe.manufacturer,
         model: probe.model,
         device_version: probe.device_version,
+        capability_state: capability.state.label().to_string(),
+        capability_record_id: capability.record_id.map(str::to_string),
+        capability_next_action: capability.state.next_action().to_string(),
     })
+}
+
+/// Build a local Recipe draft from JPEG or RAF metadata. ExifTool is used here
+/// because it understands Fujifilm MakerNote data in both containers; the app
+/// never uploads the image and never writes metadata back to it.
+#[tauri::command]
+fn import_fujifilm_image_recipe(path: String) -> Result<ImageRecipeImport, String> {
+    let file = Path::new(&path);
+    let extension = file
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .ok_or("select a JPEG or RAF file")?;
+    if !matches!(extension.as_str(), "jpg" | "jpeg" | "raf") {
+        return Err("only JPG, JPEG, and RAF files can be imported as an EXIF Recipe".to_string());
+    }
+    if !file.is_file() {
+        return Err("the selected image file no longer exists".to_string());
+    }
+    let output = Command::new("exiftool")
+        .args(["-j", "-n", "-G1"])
+        .arg(file)
+        .output()
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                "ExifTool is required for JPEG/RAF Recipe import. Install it for development, or use a release that bundles the verified metadata adapter.".to_string()
+            } else {
+                format!("could not start ExifTool: {error}")
+            }
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "ExifTool could not read this image: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let documents: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("ExifTool returned invalid metadata JSON: {error}"))?;
+    let metadata = documents
+        .first()
+        .and_then(serde_json::Value::as_object)
+        .ok_or("ExifTool returned no image metadata")?;
+    let make = exif_string(metadata, "Make").unwrap_or_default();
+    if !make.eq_ignore_ascii_case("FUJIFILM") {
+        return Err("the selected image does not identify itself as FUJIFILM".to_string());
+    }
+    let file_name = file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Imported image")
+        .to_string();
+    Ok(recipe_from_fujifilm_exif(metadata, file_name))
+}
+
+/// Perform an offline RAF preview preflight. This command deliberately does
+/// not enumerate, open, or send data to a camera. Camera transport remains
+/// unavailable until a model-specific adapter has a hardware-validated record.
+#[tauri::command]
+fn stage_raf_preview(path: String, recipe_id: String) -> Result<RafPreviewStageResult, String> {
+    let file = Path::new(&path);
+    let metadata = fs::metadata(file).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            "the selected RAF file no longer exists".to_string()
+        } else {
+            format!("could not inspect the RAF file: {error}")
+        }
+    })?;
+    if !metadata.is_file() {
+        return Err("select a RAF file, not a folder".to_string());
+    }
+    let source_name = file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("the RAF file name is not valid UTF-8")?
+        .to_string();
+    let progress = raf_preview::stage_request(raf_preview::RafPreviewRequest {
+        source_name,
+        source_bytes: metadata.len(),
+        recipe_id,
+        target: None,
+    })
+    .map_err(|error| error.to_string())?;
+    Ok(RafPreviewStageResult {
+        state: progress.state,
+        recovery_action: progress.recovery_action,
+    })
+}
+
+fn exif_value<'a>(
+    metadata: &'a serde_json::Map<String, serde_json::Value>,
+    name: &str,
+) -> Option<&'a serde_json::Value> {
+    metadata.get(name).or_else(|| {
+        metadata
+            .iter()
+            .find(|(key, _)| key.rsplit(':').next() == Some(name))
+            .map(|(_, value)| value)
+    })
+}
+
+fn exif_string(
+    metadata: &serde_json::Map<String, serde_json::Value>,
+    name: &str,
+) -> Option<String> {
+    match exif_value(metadata, name)? {
+        serde_json::Value::String(value) => Some(value.trim().to_string()),
+        serde_json::Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn exif_i64(metadata: &serde_json::Map<String, serde_json::Value>, name: &str) -> Option<i64> {
+    match exif_value(metadata, name)? {
+        serde_json::Value::Number(value) => value.as_i64(),
+        serde_json::Value::String(value) => value.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+fn exif_f64(metadata: &serde_json::Map<String, serde_json::Value>, name: &str) -> Option<f64> {
+    match exif_value(metadata, name)? {
+        serde_json::Value::Number(value) => value.as_f64(),
+        serde_json::Value::String(value) => value.trim().trim_end_matches('K').parse().ok(),
+        _ => None,
+    }
+}
+
+fn add_exif_status(
+    statuses: &mut Vec<ImageRecipeFieldStatus>,
+    key: &str,
+    status: &str,
+    detail: impl Into<String>,
+) {
+    statuses.push(ImageRecipeFieldStatus {
+        key: key.to_string(),
+        status: status.to_string(),
+        detail: detail.into(),
+    });
+}
+
+fn recipe_from_fujifilm_exif(
+    metadata: &serde_json::Map<String, serde_json::Value>,
+    file_name: String,
+) -> ImageRecipeImport {
+    use serde_json::{json, Map, Value};
+
+    let model = exif_string(metadata, "Model").unwrap_or_else(|| "Fujifilm".to_string());
+    let mut settings = Map::new();
+    let mut white_balance = Map::new();
+    let mut shooting_settings = Map::new();
+    let mut statuses = Vec::new();
+    let mut warnings = Vec::new();
+
+    match exif_i64(metadata, "FilmMode").and_then(map_exif_film_simulation) {
+        Some(value) => {
+            settings.insert("filmSimulation".to_string(), json!(value));
+            add_exif_status(
+                &mut statuses,
+                "Film Simulation",
+                "recognized",
+                "MakerNotes:FilmMode",
+            );
+        }
+        None => add_exif_status(
+            &mut statuses,
+            "Film Simulation",
+            "unavailable",
+            "MakerNote missing or model-specific value is not mapped",
+        ),
+    }
+    match exif_i64(metadata, "DynamicRangeSetting").and_then(map_exif_dynamic_range) {
+        Some(value) => {
+            settings.insert("dynamicRange".to_string(), json!(value));
+            add_exif_status(
+                &mut statuses,
+                "Dynamic Range",
+                "recognized",
+                "MakerNotes:DynamicRangeSetting",
+            );
+        }
+        None => add_exif_status(
+            &mut statuses,
+            "Dynamic Range",
+            "unavailable",
+            "MakerNote missing or automatic/development value is not mapped",
+        ),
+    }
+    match exif_i64(metadata, "WhiteBalance").and_then(map_exif_white_balance) {
+        Some(value) => {
+            white_balance.insert("mode".to_string(), json!(value));
+            add_exif_status(
+                &mut statuses,
+                "White Balance",
+                "recognized",
+                "MakerNotes:WhiteBalance",
+            );
+        }
+        None => add_exif_status(
+            &mut statuses,
+            "White Balance",
+            "unavailable",
+            "MakerNote missing or unsupported white-balance code",
+        ),
+    }
+    if let Some(value) = exif_f64(metadata, "ColorTemperature") {
+        if (2500.0..=10000.0).contains(&value) {
+            white_balance.insert("colorTemperatureK".to_string(), json!(value.round() as i64));
+            add_exif_status(
+                &mut statuses,
+                "Color Temperature",
+                "recognized",
+                "MakerNotes:ColorTemperature",
+            );
+        } else {
+            add_exif_status(
+                &mut statuses,
+                "Color Temperature",
+                "unavailable",
+                "value is outside the Recipe range",
+            );
+        }
+    } else {
+        add_exif_status(
+            &mut statuses,
+            "Color Temperature",
+            "unavailable",
+            "MakerNote is absent",
+        );
+    }
+    if let Some((red, blue)) = exif_white_balance_shift(metadata) {
+        white_balance.insert("shiftR".to_string(), json!(red));
+        white_balance.insert("shiftB".to_string(), json!(blue));
+        add_exif_status(
+            &mut statuses,
+            "WB Shift",
+            "recognized",
+            "MakerNotes:WhiteBalanceFineTune",
+        );
+    } else {
+        add_exif_status(
+            &mut statuses,
+            "WB Shift",
+            "unavailable",
+            "MakerNote is absent or uses an unknown representation",
+        );
+    }
+    if !white_balance.is_empty() {
+        settings.insert("whiteBalance".to_string(), Value::Object(white_balance));
+    }
+
+    match (
+        exif_i64(metadata, "GrainEffectRoughness"),
+        exif_i64(metadata, "GrainEffectSize"),
+    ) {
+        (Some(roughness), Some(size)) => match map_exif_grain(roughness, size) {
+            Some((strength, size)) => {
+                settings.insert(
+                    "grain".to_string(),
+                    json!({ "strength": strength, "size": size }),
+                );
+                add_exif_status(
+                    &mut statuses,
+                    "Grain Effect",
+                    "recognized",
+                    "MakerNotes:GrainEffectRoughness / GrainEffectSize",
+                );
+            }
+            None => add_exif_status(
+                &mut statuses,
+                "Grain Effect",
+                "unavailable",
+                "MakerNote values are not mapped for this model",
+            ),
+        },
+        _ => add_exif_status(
+            &mut statuses,
+            "Grain Effect",
+            "unavailable",
+            "MakerNotes are absent",
+        ),
+    }
+    for (source, target, label) in [
+        (
+            "ColorChromeEffect",
+            "colorChromeEffect",
+            "Color Chrome Effect",
+        ),
+        (
+            "ColorChromeFXBlue",
+            "colorChromeFxBlue",
+            "Color Chrome FX Blue",
+        ),
+        ("SmoothSkinEffect", "smoothSkinEffect", "Smooth Skin Effect"),
+    ] {
+        match exif_i64(metadata, source).and_then(map_exif_effect) {
+            Some(value) => {
+                settings.insert(target.to_string(), json!(value));
+                add_exif_status(
+                    &mut statuses,
+                    label,
+                    "recognized",
+                    format!("MakerNotes:{source}"),
+                );
+            }
+            None => add_exif_status(
+                &mut statuses,
+                label,
+                "unavailable",
+                "MakerNote missing or unrecognised",
+            ),
+        }
+    }
+    for (source, target, label, mapper) in [
+        (
+            "HighlightTone",
+            "highlight",
+            "Highlight Tone",
+            map_exif_tone as fn(i64) -> Option<f64>,
+        ),
+        (
+            "ShadowTone",
+            "shadow",
+            "Shadow Tone",
+            map_exif_tone as fn(i64) -> Option<f64>,
+        ),
+        (
+            "Sharpness",
+            "sharpness",
+            "Sharpness",
+            map_exif_sharpness as fn(i64) -> Option<f64>,
+        ),
+        (
+            "NoiseReduction",
+            "highIsoNoiseReduction",
+            "High ISO NR",
+            map_exif_noise_reduction as fn(i64) -> Option<f64>,
+        ),
+    ] {
+        match exif_i64(metadata, source).and_then(mapper) {
+            Some(value) => {
+                settings.insert(target.to_string(), json!(value));
+                add_exif_status(
+                    &mut statuses,
+                    label,
+                    "recognized",
+                    format!("MakerNotes:{source}"),
+                );
+            }
+            None => add_exif_status(
+                &mut statuses,
+                label,
+                "unavailable",
+                "MakerNote missing or unrecognised",
+            ),
+        }
+    }
+    match exif_i64(metadata, "Saturation").and_then(map_exif_color) {
+        Some(value) => {
+            settings.insert("color".to_string(), json!(value));
+            add_exif_status(
+                &mut statuses,
+                "Color",
+                "recognized",
+                "MakerNotes:Saturation",
+            );
+        }
+        None => add_exif_status(
+            &mut statuses,
+            "Color",
+            "unavailable",
+            "MakerNote is absent or belongs to a monochrome simulation",
+        ),
+    }
+    match exif_i64(metadata, "Clarity") {
+        Some(value) if (-5000..=5000).contains(&value) && value % 1000 == 0 => {
+            settings.insert("clarity".to_string(), json!(value / 1000));
+            add_exif_status(&mut statuses, "Clarity", "recognized", "MakerNotes:Clarity");
+        }
+        _ => add_exif_status(
+            &mut statuses,
+            "Clarity",
+            "unavailable",
+            "MakerNote missing or unrecognised",
+        ),
+    }
+    match exif_i64(metadata, "ISO") {
+        Some(value) if value > 0 => {
+            shooting_settings.insert("isoSensitivity".to_string(), json!(format!("ISO_{value}")));
+            add_exif_status(&mut statuses, "ISO Sensitivity", "recognized", "EXIF:ISO");
+        }
+        _ => add_exif_status(
+            &mut statuses,
+            "ISO Sensitivity",
+            "unavailable",
+            "EXIF ISO is absent",
+        ),
+    }
+    if !metadata
+        .keys()
+        .any(|key| key.rsplit(':').next() == Some("FilmMode"))
+    {
+        warnings.push("No Fujifilm FilmMode MakerNote was found. This may be a processed image rather than a straight-out-of-camera JPEG/RAF.".to_string());
+    }
+    warnings.push("Only fields marked recognized are used to build the Recipe. Unavailable fields retain safe local defaults and are never guessed.".to_string());
+
+    ImageRecipeImport {
+        file_name,
+        model,
+        settings: Value::Object(settings),
+        shooting_settings: Value::Object(shooting_settings),
+        field_statuses: statuses,
+        warnings,
+    }
+}
+
+fn map_exif_film_simulation(value: i64) -> Option<&'static str> {
+    match value {
+        0x000 => Some("PROVIA"),
+        0x120 => Some("ASTIA"),
+        0x200 | 0x400 => Some("VELVIA"),
+        0x500 => Some("PRO_NEG_STD"),
+        0x501 => Some("PRO_NEG_HI"),
+        0x600 => Some("CLASSIC_CHROME"),
+        0x700 => Some("ETERNA"),
+        0x800 => Some("CLASSIC_NEGATIVE"),
+        0x900 => Some("ETERNA_BLEACH_BYPASS"),
+        0xA00 => Some("NOSTALGIC_NEGATIVE"),
+        0xB00 => Some("REALA_ACE"),
+        _ => None,
+    }
+}
+
+fn map_exif_dynamic_range(value: i64) -> Option<&'static str> {
+    match value {
+        0 => Some("AUTO"),
+        100 => Some("DR100"),
+        200 => Some("DR200"),
+        400 => Some("DR400"),
+        _ => None,
+    }
+}
+
+fn map_exif_white_balance(value: i64) -> Option<&'static str> {
+    match value {
+        0x000 => Some("AUTO"),
+        0x001 => Some("WHITE_PRIORITY"),
+        0x002 => Some("AMBIENCE_PRIORITY"),
+        0x100 => Some("DAYLIGHT"),
+        0x200 => Some("SHADE"),
+        0x300 => Some("FLUORESCENT_1"),
+        0x301 => Some("FLUORESCENT_2"),
+        0x302 => Some("FLUORESCENT_3"),
+        0x400 => Some("INCANDESCENT"),
+        0x600 => Some("UNDERWATER"),
+        0xFF0 => Some("COLOR_TEMPERATURE"),
+        _ => None,
+    }
+}
+
+fn map_exif_grain(roughness: i64, size: i64) -> Option<(&'static str, &'static str)> {
+    match (roughness, size) {
+        (0, _) => Some(("OFF", "SMALL")),
+        (32, 16) => Some(("WEAK", "SMALL")),
+        (32, 32) => Some(("WEAK", "LARGE")),
+        (64, 16) => Some(("STRONG", "SMALL")),
+        (64, 32) => Some(("STRONG", "LARGE")),
+        _ => None,
+    }
+}
+
+fn map_exif_effect(value: i64) -> Option<&'static str> {
+    match value {
+        0 => Some("OFF"),
+        32 => Some("WEAK"),
+        64 => Some("STRONG"),
+        _ => None,
+    }
+}
+
+fn map_exif_tone(value: i64) -> Option<f64> {
+    if (-64..=32).contains(&value) && value % 8 == 0 {
+        Some(-(value as f64) / 16.0)
+    } else {
+        None
+    }
+}
+
+fn map_exif_sharpness(value: i64) -> Option<f64> {
+    match value {
+        0 => Some(-4.0),
+        1 => Some(-3.0),
+        2 => Some(-2.0),
+        3 => Some(0.0),
+        4 => Some(2.0),
+        5 => Some(3.0),
+        6 => Some(4.0),
+        0x82 => Some(-1.0),
+        0x84 => Some(1.0),
+        _ => None,
+    }
+}
+
+fn map_exif_noise_reduction(value: i64) -> Option<f64> {
+    match value {
+        0x000 => Some(0.0),
+        0x100 => Some(2.0),
+        0x180 => Some(1.0),
+        0x1C0 => Some(3.0),
+        0x1E0 => Some(4.0),
+        0x200 => Some(-2.0),
+        0x280 => Some(-1.0),
+        0x2C0 => Some(-3.0),
+        0x2E0 => Some(-4.0),
+        _ => None,
+    }
+}
+
+fn map_exif_color(value: i64) -> Option<i64> {
+    match value {
+        0x000 => Some(0),
+        0x080 => Some(1),
+        0x100 => Some(2),
+        0x0C0 => Some(3),
+        0x0E0 => Some(4),
+        0x180 => Some(-1),
+        0x400 => Some(-2),
+        0x4C0 => Some(-3),
+        0x4E0 => Some(-4),
+        _ => None,
+    }
+}
+
+fn exif_white_balance_shift(
+    metadata: &serde_json::Map<String, serde_json::Value>,
+) -> Option<(i64, i64)> {
+    let raw = exif_string(metadata, "WhiteBalanceFineTune")?;
+    let numbers = raw
+        .split(|character: char| character.is_ascii_whitespace() || character == ',')
+        .filter(|value| !value.is_empty())
+        .map(str::parse::<i64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    if numbers.len() != 2 {
+        return None;
+    }
+    let (red, blue) = (numbers[0], numbers[1]);
+    let (red, blue) = if red.abs() >= 20 || blue.abs() >= 20 {
+        (red / 20, blue / 20)
+    } else {
+        (red, blue)
+    };
+    ((-9..=9).contains(&red) && (-9..=9).contains(&blue)).then_some((red, blue))
+}
+
+/// Every X-M5 operation below this line can change the active C-slot selector
+/// or a setting. It therefore requires the complete USB + PTP model + firmware
+/// identity, not merely a Fujifilm vendor ID or product string.
+fn exact_xm5_write_identity(id: UsbId) -> Result<usb_transport::PtpDeviceInfoProbe, String> {
+    let device_info =
+        usb_transport::probe_ptp_device_info(id).map_err(|error| error.to_string())?;
+    let capability = camera_fujifilm::resolve_capability_record(
+        id,
+        &device_info.model,
+        &device_info.device_version,
+    );
+    if capability.state != camera_fujifilm::CapabilityRecordState::ExactExperimental {
+        return Err(format!(
+            "{}: {}",
+            capability.state.label(),
+            capability.state.next_action()
+        ));
+    }
+    Ok(device_info)
 }
 
 #[tauri::command]
@@ -197,6 +835,7 @@ fn select_camera_slot(usb_id: String, slot: u16) -> Result<SlotSelectionResult, 
         return Err("slot must be between C1 and C4".to_string());
     }
     let id = parse_usb_id(&usb_id)?;
+    exact_xm5_write_identity(id)?;
     usb_transport::select_custom_slot(id, slot).map_err(|error| error.to_string())?;
     let read_back =
         usb_transport::probe_ptp_property_value(id, 0xD18C).map_err(|error| error.to_string())?;
@@ -223,6 +862,75 @@ fn select_camera_slot(usb_id: String, slot: u16) -> Result<SlotSelectionResult, 
     })
 }
 
+/// Capture the observed custom-slot property window without writing a Recipe
+/// property. Selecting the requested C slot is the one necessary transport
+/// side effect; the previous active slot is always read first and verified on
+/// restoration. Failed reads are recorded by code, not retried as writes.
+#[tauri::command]
+fn capture_xm5_raw_preset_snapshot(
+    usb_id: String,
+    slot: u16,
+) -> Result<RawPtpPresetSnapshot, String> {
+    if !(1..=4).contains(&slot) {
+        return Err("slot must be between C1 and C4".to_string());
+    }
+    let id = parse_usb_id(&usb_id)?;
+    let device_info = exact_xm5_write_identity(id)?;
+    let previously_selected = read_selected_slot(id)?;
+    usb_transport::select_custom_slot(id, slot).map_err(|error| error.to_string())?;
+
+    let outcome = (|| -> Result<RawPtpPresetSnapshot, String> {
+        let mut properties = Vec::new();
+        let mut unreadable_property_codes = Vec::new();
+        for code in xm5_raw_snapshot_property_codes() {
+            match usb_transport::probe_ptp_property_value(id, *code) {
+                Ok(probe) => properties.push(RawPtpPresetSnapshotProperty {
+                    code: format!("{code:04X}"),
+                    value_hex: format_hex(&probe.value),
+                }),
+                Err(_) => unreadable_property_codes.push(format!("{code:04X}")),
+            }
+        }
+        if properties.is_empty() {
+            return Err("camera did not return any readable custom-slot properties".to_string());
+        }
+        Ok(RawPtpPresetSnapshot {
+            manufacturer: "FUJIFILM",
+            model: device_info.model,
+            firmware: device_info.device_version,
+            usb_id: id.to_string(),
+            slot,
+            captured_at: timestamp_millis().to_string(),
+            restoration_policy: "read_only_preserved",
+            properties,
+            unreadable_property_codes,
+        })
+    })();
+
+    let selector_result = restore_selected_slot(id, previously_selected);
+    match (outcome, selector_result) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Ok(_), Err(error)) => Err(format!(
+            "raw snapshot was captured, but the prior active slot could not be restored: {error}"
+        )),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(selector_error)) => Err(format!(
+            "{error}; also failed to restore the active slot: {selector_error}"
+        )),
+    }
+}
+
+/// This bounded property window is specific to the observed X-M5 custom-slot
+/// protocol. It includes rejected/unknown values so a snapshot can preserve
+/// them, but it is intentionally not the application restore allow-list.
+fn xm5_raw_snapshot_property_codes() -> &'static [u16] {
+    &[
+        0xD18D, 0xD18E, 0xD18F, 0xD190, 0xD191, 0xD192, 0xD193, 0xD194, 0xD195, 0xD196, 0xD197,
+        0xD198, 0xD199, 0xD19A, 0xD19B, 0xD19C, 0xD19D, 0xD19E, 0xD19F, 0xD1A0, 0xD1A1, 0xD1A2,
+        0xD1A3, 0xD1A4, 0xD1A5,
+    ]
+}
+
 #[tauri::command]
 fn write_xm5_recipe(
     usb_id: String,
@@ -231,23 +939,43 @@ fn write_xm5_recipe(
     name: String,
     database: tauri::State<'_, LibraryDb>,
 ) -> Result<RecipeWriteResult, String> {
+    write_xm5_recipe_inner(usb_id, slot, settings, name, false, database.inner())
+}
+
+/// Clear the Recipe values which have an X-M5 firmware-1.30 write/read-back
+/// record. This deliberately is not advertised as a factory reset: unverified
+/// camera settings are left untouched and every changed value gets a durable
+/// restore point first.
+#[tauri::command]
+fn clear_xm5_custom_slot(
+    usb_id: String,
+    slot: u16,
+    database: tauri::State<'_, LibraryDb>,
+) -> Result<RecipeWriteResult, String> {
+    write_xm5_recipe_inner(
+        usb_id,
+        slot,
+        cleared_xm5_recipe_settings(),
+        String::new(),
+        true,
+        database.inner(),
+    )
+}
+
+fn write_xm5_recipe_inner(
+    usb_id: String,
+    slot: u16,
+    settings: camera_xm5::Xm5RecipeSettings,
+    name: String,
+    allow_empty_name: bool,
+    database: &LibraryDb,
+) -> Result<RecipeWriteResult, String> {
     if !(1..=4).contains(&slot) {
         return Err("slot must be between C1 and C4".to_string());
     }
     let id = parse_usb_id(&usb_id)?;
-    if id != UsbId::new(0x04CB, 0x030C) {
-        return Err("writing is currently verified only for FUJIFILM X-M5 (04CB:030C)".to_string());
-    }
-    let device_info =
-        usb_transport::probe_ptp_device_info(id).map_err(|error| error.to_string())?;
-    if !camera_xm5::supports_experimental_write_firmware(&device_info.device_version) {
-        return Err(format!(
-            "X-M5 firmware {} is probe-only. Experimental writing is currently gated to firmware {}.",
-            device_info.device_version,
-            camera_xm5::X_M5_EXPERIMENTAL_WRITE_FIRMWARES.join(", ")
-        ));
-    }
-    let preset_name = camera_preset_name(&name)?;
+    exact_xm5_write_identity(id)?;
+    let preset_name = camera_preset_name(&name, allow_empty_name)?;
     let preset_name_value =
         ptp_core::encode_string(&preset_name).map_err(|error| error.to_string())?;
     let mut properties = camera_xm5::encode_recipe(&settings)?;
@@ -263,17 +991,21 @@ fn write_xm5_recipe(
     usb_transport::select_custom_slot(id, slot).map_err(|error| error.to_string())?;
 
     let outcome = (|| -> Result<RecipeWriteResult, String> {
-        let captured = properties
-            .iter()
-            .map(|property| {
-                usb_transport::probe_ptp_property_value(id, property.code)
-                    .map(|probe| SnapshotProperty {
-                        code: property.code,
-                        value: probe.value,
-                    })
-                    .map_err(|error| error.to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut captured = Vec::new();
+        for property in &properties {
+            if captured
+                .iter()
+                .any(|snapshot: &SnapshotProperty| snapshot.code == property.code)
+            {
+                continue;
+            }
+            let probe = usb_transport::probe_ptp_property_value(id, property.code)
+                .map_err(|error| error.to_string())?;
+            captured.push(SnapshotProperty {
+                code: property.code,
+                value: probe.value,
+            });
+        }
         let backup = CameraBackup {
             id: new_record_id("backup"),
             usb_id: id.to_string(),
@@ -281,7 +1013,7 @@ fn write_xm5_recipe(
             captured_at: timestamp_millis(),
             properties: captured,
         };
-        save_camera_backup(database.inner(), &backup)?;
+        save_camera_backup(database, &backup)?;
         let mut journal = WriteJournal {
             id: new_record_id("write"),
             backup_id: backup.id.clone(),
@@ -291,7 +1023,7 @@ fn write_xm5_recipe(
             state: "writing".to_string(),
             error: None,
         };
-        save_write_journal(database.inner(), &journal)?;
+        save_write_journal(database, &journal)?;
 
         for property in &properties {
             let result =
@@ -319,7 +1051,7 @@ fn write_xm5_recipe(
                 } else {
                     "recovery_failed".to_string()
                 };
-                update_write_journal(database.inner(), &journal)?;
+                update_write_journal(database, &journal)?;
                 return match restore_result {
                     Ok(()) => Err(format!("{original_error}; captured values were restored and verified")),
                     Err(restore_error) => Err(format!(
@@ -330,8 +1062,9 @@ fn write_xm5_recipe(
             }
         }
         journal.state = "committed".to_string();
-        update_write_journal(database.inner(), &journal)?;
+        update_write_journal(database, &journal)?;
         Ok(RecipeWriteResult {
+            usb_id: id.to_string(),
             slot,
             verified_properties: properties
                 .iter()
@@ -356,9 +1089,9 @@ fn write_xm5_recipe(
     }
 }
 
-fn camera_preset_name(name: &str) -> Result<String, String> {
+fn camera_preset_name(name: &str, allow_empty: bool) -> Result<String, String> {
     let name = name.trim();
-    if name.is_empty() {
+    if name.is_empty() && !allow_empty {
         return Err("X-M5 preset name cannot be empty".to_string());
     }
     if name.encode_utf16().count() > 31 {
@@ -374,6 +1107,36 @@ fn camera_preset_name(name: &str) -> Result<String, String> {
         );
     }
     Ok(name.to_string())
+}
+
+fn cleared_xm5_recipe_settings() -> camera_xm5::Xm5RecipeSettings {
+    camera_xm5::Xm5RecipeSettings {
+        film_simulation: "PROVIA".to_string(),
+        dynamic_range: "DR100".to_string(),
+        white_balance: camera_xm5::Xm5WhiteBalance {
+            mode: "AUTO".to_string(),
+            color_temperature_k: 6500,
+            shift_r: 0,
+            shift_b: 0,
+        },
+        grain: camera_xm5::Xm5Grain {
+            strength: "OFF".to_string(),
+            size: "SMALL".to_string(),
+        },
+        color_chrome_effect: "OFF".to_string(),
+        color_chrome_fx_blue: "OFF".to_string(),
+        smooth_skin_effect: "OFF".to_string(),
+        monochromatic_color: camera_xm5::Xm5MonochromaticColor::default(),
+        color_space: "SRGB".to_string(),
+        image_size: "L_3_2".to_string(),
+        image_quality: "FINE".to_string(),
+        highlight: 0.0,
+        shadow: 0.0,
+        color: 0,
+        sharpness: 0,
+        high_iso_noise_reduction: 0,
+        clarity: 0,
+    }
 }
 
 fn timestamp_millis() -> u128 {
@@ -430,17 +1193,25 @@ fn restore_captured_properties(id: UsbId, properties: &[SnapshotProperty]) -> Re
             failures.push(error);
             continue;
         }
-        let restore = camera_xm5::restore_property(captured.code, &captured.value);
-        let result = usb_transport::set_ptp_property_value(id, restore.code, &restore.write_value)
-            .and_then(|_| usb_transport::probe_ptp_property_value(id, restore.code));
-        match result {
-            Ok(probe) if restore.matches_read_back(&probe.value) => {}
-            Ok(probe) => failures.push(format!(
-                "{:04X} read-back mismatch ({})",
-                restore.code,
-                format_hex(&probe.value)
-            )),
-            Err(error) => failures.push(format!("{:04X} {error}", restore.code)),
+        for restore in camera_xm5::restore_property_steps(captured.code, &captured.value) {
+            let result =
+                usb_transport::set_ptp_property_value(id, restore.code, &restore.write_value)
+                    .and_then(|_| usb_transport::probe_ptp_property_value(id, restore.code));
+            match result {
+                Ok(probe) if restore.matches_read_back(&probe.value) => {}
+                Ok(probe) => {
+                    failures.push(format!(
+                        "{:04X} read-back mismatch ({})",
+                        restore.code,
+                        format_hex(&probe.value)
+                    ));
+                    break;
+                }
+                Err(error) => {
+                    failures.push(format!("{:04X} {error}", restore.code));
+                    break;
+                }
+            }
         }
     }
     if failures.is_empty() {
@@ -457,20 +1228,25 @@ fn validate_restorable_property(property: &SnapshotProperty) -> Result<(), Strin
     let known = matches!(
         property.code,
         0xD18D
+            | 0xD18E
+            | 0xD18F
             | 0xD190
             | 0xD192
             | 0xD195
             | 0xD196
             | 0xD197
+            | 0xD198
             | 0xD199
             | 0xD19A
             | 0xD19B
+            | 0xD19C
             | 0xD19D
             | 0xD19E
             | 0xD19F
             | 0xD1A0
             | 0xD1A1
             | 0xD1A2
+            | 0xD1A4
     );
     if !known {
         return Err(format!(
@@ -592,12 +1368,7 @@ fn restore_xm5_backup(
     database: tauri::State<'_, LibraryDb>,
 ) -> Result<CameraBackupSummary, String> {
     let id = parse_usb_id(&usb_id)?;
-    if id != UsbId::new(0x04CB, 0x030C) {
-        return Err(
-            "backup restoration is currently verified only for FUJIFILM X-M5 (04CB:030C)"
-                .to_string(),
-        );
-    }
+    exact_xm5_write_identity(id)?;
     let backup = {
         let connection = database
             .0
@@ -637,11 +1408,7 @@ fn restore_xm5_backup(
 #[tauri::command]
 fn read_xm5_installed_presets(usb_id: String) -> Result<Vec<InstalledPreset>, String> {
     let id = parse_usb_id(&usb_id)?;
-    if id != UsbId::new(0x04CB, 0x030C) {
-        return Err(
-            "installed-preset reading is currently verified only for FUJIFILM X-M5".to_string(),
-        );
-    }
+    exact_xm5_write_identity(id)?;
     let selected =
         usb_transport::probe_ptp_property_value(id, 0xD18C).map_err(|error| error.to_string())?;
     if selected.value.len() != 2 {
@@ -907,23 +1674,122 @@ mod tests {
     #[test]
     fn camera_preset_name_accepts_printable_ascii() {
         assert_eq!(
-            camera_preset_name("Night Chrome 400").unwrap(),
+            camera_preset_name("Night Chrome 400", false).unwrap(),
             "Night Chrome 400"
         );
     }
 
     #[test]
+    fn clearing_a_slot_allows_only_the_explicit_empty_name_path() {
+        assert!(camera_preset_name("", false).is_err());
+        assert_eq!(camera_preset_name("", true).unwrap(), "");
+    }
+
+    #[test]
+    fn cleared_slot_uses_only_verified_neutral_values() {
+        let properties = camera_xm5::encode_recipe(&cleared_xm5_recipe_settings()).unwrap();
+        assert_eq!(properties.len(), 19);
+        assert_eq!(
+            properties
+                .iter()
+                .filter(|property| property.code == 0xD195)
+                .count(),
+            2
+        );
+        assert!(properties.iter().all(|property| {
+            matches!(
+                property.code,
+                0xD18E
+                    | 0xD18F
+                    | 0xD190
+                    | 0xD192
+                    | 0xD195
+                    | 0xD196
+                    | 0xD197
+                    | 0xD198
+                    | 0xD199
+                    | 0xD19A
+                    | 0xD19B
+                    | 0xD19D
+                    | 0xD19E
+                    | 0xD19F
+                    | 0xD1A0
+                    | 0xD1A1
+                    | 0xD1A2
+                    | 0xD1A4
+            )
+        }));
+    }
+
+    #[test]
+    fn raw_snapshot_window_includes_rejected_properties_without_approving_restore() {
+        let codes = xm5_raw_snapshot_property_codes();
+        assert_eq!(codes.first(), Some(&0xD18D));
+        assert_eq!(codes.last(), Some(&0xD1A5));
+        assert!(codes.contains(&0xD193));
+        assert!(codes.contains(&0xD194));
+        assert!(codes.contains(&0xD1A3));
+        assert!(validate_restorable_property(&SnapshotProperty {
+            code: 0xD193,
+            value: vec![0, 0],
+        })
+        .is_err());
+    }
+
+    #[test]
     fn camera_preset_name_rejects_unverified_unicode() {
-        assert!(camera_preset_name("台北夜景")
+        assert!(camera_preset_name("台北夜景", false)
             .unwrap_err()
             .contains("printable ASCII"));
     }
 
     #[test]
     fn camera_preset_name_rejects_more_than_31_utf16_units() {
-        assert!(camera_preset_name(&"A".repeat(32))
+        assert!(camera_preset_name(&"A".repeat(32), false)
             .unwrap_err()
             .contains("31 UTF-16"));
+    }
+
+    #[test]
+    fn image_recipe_import_maps_only_known_fujifilm_makernotes() {
+        let metadata = serde_json::json!({
+            "EXIF:Make": "FUJIFILM",
+            "EXIF:Model": "X-M5",
+            "EXIF:ISO": 640,
+            "MakerNotes:FilmMode": 0x600,
+            "MakerNotes:DynamicRangeSetting": 400,
+            "MakerNotes:WhiteBalance": 0xFF0,
+            "MakerNotes:ColorTemperature": 6500,
+            "MakerNotes:WhiteBalanceFineTune": "60 -40",
+            "MakerNotes:GrainEffectRoughness": 64,
+            "MakerNotes:GrainEffectSize": 16,
+            "MakerNotes:ColorChromeEffect": 64,
+            "MakerNotes:ColorChromeFXBlue": 32,
+            "MakerNotes:HighlightTone": 16,
+            "MakerNotes:ShadowTone": -32,
+            "MakerNotes:Saturation": 0x100,
+            "MakerNotes:Sharpness": 0x82,
+            "MakerNotes:NoiseReduction": 0x2E0,
+            "MakerNotes:Clarity": -2000
+        });
+        let draft =
+            recipe_from_fujifilm_exif(metadata.as_object().unwrap(), "test.JPG".to_string());
+        assert_eq!(draft.model, "X-M5");
+        assert_eq!(draft.settings["filmSimulation"], "CLASSIC_CHROME");
+        assert_eq!(draft.settings["dynamicRange"], "DR400");
+        assert_eq!(draft.settings["whiteBalance"]["mode"], "COLOR_TEMPERATURE");
+        assert_eq!(draft.settings["whiteBalance"]["colorTemperatureK"], 6500);
+        assert_eq!(draft.settings["whiteBalance"]["shiftR"], 3);
+        assert_eq!(draft.settings["whiteBalance"]["shiftB"], -2);
+        assert_eq!(draft.settings["grain"]["strength"], "STRONG");
+        assert_eq!(draft.settings["grain"]["size"], "SMALL");
+        assert_eq!(draft.settings["highlight"], -1.0);
+        assert_eq!(draft.settings["shadow"], 2.0);
+        assert_eq!(draft.settings["clarity"], -2);
+        assert!(draft
+            .field_statuses
+            .iter()
+            .any(|field| field.key == "Smooth Skin Effect" && field.status == "unavailable"));
     }
 }
 
@@ -931,17 +1797,23 @@ mod tests {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             app.manage(open_library_database(app).map_err(std::io::Error::other)?);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             app_status,
+            xm5_capability_record,
             discover_cameras,
             probe_camera_device_info,
+            import_fujifilm_image_recipe,
+            stage_raf_preview,
             read_camera_slot_selector,
             select_camera_slot,
+            capture_xm5_raw_preset_snapshot,
             write_xm5_recipe,
+            clear_xm5_custom_slot,
             read_xm5_installed_presets,
             list_camera_backups,
             restore_xm5_backup,

@@ -121,6 +121,11 @@ pub struct DeviceInfo {
     pub manufacturer: String,
     pub model: String,
     pub device_version: String,
+    pub operations_supported: Vec<u16>,
+    pub events_supported: Vec<u16>,
+    pub device_properties_supported: Vec<u16>,
+    pub capture_formats: Vec<u16>,
+    pub image_formats: Vec<u16>,
 }
 
 /// Parse the stable, non-sensitive fields from the standard PTP DeviceInfo dataset.
@@ -132,9 +137,11 @@ pub fn parse_device_info(bytes: &[u8]) -> Result<DeviceInfo, PtpError> {
     take_u16(bytes, &mut cursor)?; // VendorExtensionVersion
     take_string(bytes, &mut cursor)?; // VendorExtensionDesc
     take_u16(bytes, &mut cursor)?; // FunctionalMode
-    for _ in 0..5 {
-        skip_u16_array(bytes, &mut cursor)?;
-    }
+    let operations_supported = take_u16_array(bytes, &mut cursor)?;
+    let events_supported = take_u16_array(bytes, &mut cursor)?;
+    let device_properties_supported = take_u16_array(bytes, &mut cursor)?;
+    let capture_formats = take_u16_array(bytes, &mut cursor)?;
+    let image_formats = take_u16_array(bytes, &mut cursor)?;
     let manufacturer = take_string(bytes, &mut cursor)?;
     let model = take_string(bytes, &mut cursor)?;
     let device_version = take_string(bytes, &mut cursor)?;
@@ -143,6 +150,11 @@ pub fn parse_device_info(bytes: &[u8]) -> Result<DeviceInfo, PtpError> {
         manufacturer,
         model,
         device_version,
+        operations_supported,
+        events_supported,
+        device_properties_supported,
+        capture_formats,
+        image_formats,
     })
 }
 
@@ -166,7 +178,7 @@ fn take_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32, PtpError> {
     ))
 }
 
-fn skip_u16_array(bytes: &[u8], cursor: &mut usize) -> Result<(), PtpError> {
+fn take_u16_array(bytes: &[u8], cursor: &mut usize) -> Result<Vec<u16>, PtpError> {
     let count = take_u32(bytes, cursor)? as usize;
     let length = count
         .checked_mul(2)
@@ -179,8 +191,14 @@ fn skip_u16_array(bytes: &[u8], cursor: &mut usize) -> Result<(), PtpError> {
             "unexpected end of PTP DeviceInfo array",
         ));
     }
+    let (pairs, remainder) = bytes[*cursor..end].as_chunks::<2>();
+    debug_assert!(remainder.is_empty());
+    let values = pairs
+        .iter()
+        .map(|value| u16::from_le_bytes(*value))
+        .collect();
     *cursor = end;
-    Ok(())
+    Ok(values)
 }
 
 fn take_string(bytes: &[u8], cursor: &mut usize) -> Result<String, PtpError> {
@@ -335,6 +353,7 @@ mod tests {
         assert_eq!(info.manufacturer, "FUJIFILM");
         assert_eq!(info.model, "X-M5");
         assert_eq!(info.device_version, "1.00");
+        assert!(info.device_properties_supported.is_empty());
     }
 
     #[test]

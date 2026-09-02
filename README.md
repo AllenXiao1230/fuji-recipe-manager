@@ -17,16 +17,28 @@ The workflow takes inspiration from [Latent](https://github.com/formray/latent):
 - A Tauri 2 desktop shell and responsive React recipe workspace.
 - Local SQLite recipe library in the desktop app, with browser-development fallback storage.
 - Recipe creation, editing, search, tags, favourites, JSON/FRecipe import and export, and common Recipe text parsing.
+- Composable Recipe Library filters for film simulation, tag (including untagged), favourites, C1–C4 assignment, and camera compatibility. Search also covers each Recipe's name, description, tags, source author, and compatible cameras.
+- Independent desktop scrolling for the Recipe Library column (search, filters, and cards) and the Recipe editor, so a long editor never displaces the library controls.
+- A custom minimal camera-and-recipe-card app icon, generated as macOS `.icns`, Windows `.ico`, and platform PNG assets and explicitly included in the Tauri bundle.
 - Optional original-author and source-URL attribution stored with every local Recipe. URLs are never scraped or used to copy a Recipe into the app.
 - USB discovery through Rust and `nusb` across Fujifilm X Series, X100, GFX, FinePix, and unknown Fujifilm bodies.
 - An X-M5 profile with four custom slots and a physical USB record: `04CB:030C`, firmware `1.30`.
 - Read-only PTP DeviceInfo probing with serial numbers deliberately excluded from logs.
 - An opt-in PTP property-descriptor probe that opens and closes a standard session without selecting a slot or sending a write command.
 - A hardware-verified X-M5 preset-name write/read-back/restore CLI test. Firmware 1.30 accepts printable ASCII names; Unicode names are proactively blocked after the camera rejected them with PTP `201C`.
-- Reversible X-M5 C2 write/read-back/restore tests for dynamic range and the signed highlight, shadow, color, sharpness, and clarity properties.
-- Reversible X-M5 C2 tests for film simulation, Color Chrome, Chrome FX Blue, white balance, WB shifts, high ISO NR, and Grain. X-M5 Grain Off uses command value `01 00` and reads back canonically as `06 00`; this normalization is encoded and unit-tested.
+- Reversible X-M5 C4 write/read-back/restore tests across every currently writable Recipe field. Enumerated controls are tested across their supported values; numeric controls at minimum, neutral, and maximum.
+- X-M5 Grain Off writes the retained Small/Large size first, then command value `01 00`; it reads back canonically as `06 00` (Small) or `07 00` (Large). This recovery sequence is encoded and unit-tested.
+- X-M5 firmware 1.30 rejects Highlight and Shadow below `-2.0` with PTP `201C`; both controls therefore allow `-2.0` through `+4.0` in `0.5` steps.
 - Experimental GUI writes for X-M5 only: the target custom-setting name (`D18D`) and Recipe fields are captured in a pre-write SQLite backup and write journal, every value is read back, and failed writes run a verified rollback. The previous active slot is restored after each operation.
+- Optional per-Recipe raw C-slot preservation: readable X-M5 custom-slot bytes can be captured for audit/interchange, including rejected fields. They are strictly read-only metadata and can never be replayed by the camera writer or recovery system.
 - A recovery-backup list and explicit, verified X-M5 restore action.
+- A versioned, bundled capability record at `data/capabilities/fujifilm-xm5-1.30.json`; the import dialog lists every field as write verified, detected-but-unverified, camera-rejected (`201C`), or unknown/blocked.
+- Additional X-M5 1.30 write/read-back/restore support for Smooth Skin Effect, sRGB/Adobe RGB, Color Temperature (when White Balance is Color Temperature), and the specifically verified `S 3:2`, `S 16:9`, `S 1:1`, `M 3:2`, `M 16:9`, `M 1:1`, `L 3:2`, `L 16:9`, `L 1:1`, `RAW`, `FINE`, `NORMAL`, `FINE+RAW`, and `NORMAL+RAW` image payloads.
+- All non-Auto Film Simulations, Dynamic Range Auto, and White Balance White Priority / Ambience Priority also passed independent X-M5 C4 write/read-back/restore verification. Film Simulation Auto and White Balance Custom 1–3 remain locked.
+- Long Exposure NR and monochrome warm/cool or magenta/green remain locked after physical `201C` rejections; detected global properties also remain read-only.
+- X RAW Studio `.FP1`, `.FP2`, and `.FP3` profile import/export. Unmapped XML is retained with the local Recipe where safe; serial-number data is removed and the app reports unmapped fields.
+- Desktop JPEG/RAF metadata import creates a local Recipe and marks every field as recognised or unavailable. Development uses ExifTool for Fujifilm MakerNotes; a distributable release must bundle and validate this adapter on each platform.
+- RAF preview has a desktop offline preflight and a Rust transaction boundary for upload → temporary Recipe → conversion → JPEG download → cleanup. It deliberately has no camera transport adapter yet, so the preflight never opens a camera or claims to render a JPEG.
 
 ## Safety boundary
 
@@ -48,13 +60,25 @@ npm install
 npm run tauri dev
 ```
 
-Create a local macOS development bundle:
+Create the local macOS app bundle only (recommended for local hand-off testing):
 
 ```bash
-npm run tauri -- build
+npm run tauri -- build --bundles app
 ```
 
-The local bundle is written under `target/release/bundle/macos/`. It is not code-signed or notarized. Build Windows installers on a Windows runner after the Windows USB/PTP checklist passes.
+The resulting app is `target/release/bundle/macos/Fuji Recipe Manager.app`. It is not code-signed or notarized. Build Windows installers on a Windows runner after the Windows USB/PTP checklist passes.
+
+An unsigned local build may require an explicit Gatekeeper “Open” action on macOS. A signed and notarized DMG is still required before normal distribution.
+
+### Build a Windows `.exe`
+
+On Windows, run [`build-windows-exe.bat`](build-windows-exe.bat). It verifies Node.js, npm, and Rust; installs JavaScript dependencies when they are missing; runs the TypeScript check; then builds `target\\release\\Fuji Recipe Manager.exe` with Tauri. Install the Rust MSVC toolchain, Microsoft C++ Build Tools, and WebView2 Runtime first. The generated executable is not code-signed.
+
+## Recipe Library navigation
+
+Filters can be combined. For example, select **Classic Negative**, **Favourite**, and **Unassigned** to find starred Classic Negative Recipes that are not currently assigned to C1–C4. Use **Clear filters** to return to the complete local library.
+
+On desktop, the left Recipe Library column and the right Recipe editor have separate scroll areas. The search and filter controls remain with the library while you browse or edit long Recipe details.
 
 ## Read-only camera probes
 
@@ -67,6 +91,10 @@ cargo run -p fuji-test
 # Standard PTP GetDeviceInfo; no PTP session and no camera setting access
 cargo run -p fuji-test -- ptp-info
 
+# Read-only scan for any Fujifilm model. It records identity and standard
+# readable property values only; it never selects a C slot or writes a setting.
+cargo run -p fuji-test -- ptp-scan-readonly
+
 # Explicitly inspect one property descriptor (hex). This opens then closes a
 # standard PTP session; it does not select a custom slot or write a setting.
 cargo run -p fuji-test -- ptp-descriptor D18C
@@ -74,6 +102,19 @@ cargo run -p fuji-test -- ptp-descriptor D18C
 # Read one property's raw value. The bytes remain un-interpreted until their
 # encoding is verified for this exact camera model and firmware.
 cargo run -p fuji-test -- ptp-read D18C
+
+# Controlled candidate capture for an Image Size / Quality value you selected
+# manually on a disposable C slot. It reads one raw value and restores the
+# previously active slot; it does not write the candidate value.
+cargo run -p fuji-test -- ptp-capture-xm5-image-payload C4 image-size L_16_9
+
+# Reversible verification after recording the raw candidate. The raw argument
+# is hexadecimal; only a PASS with active-slot recovery may unlock the value.
+cargo run -p fuji-test -- ptp-verify-xm5-image-payload C4 image-size L_16_9 0x0008
+
+# Physical write validation on a disposable slot. This captures every value,
+# writes/read-backs each test case, restores it, and restores the active slot.
+cargo run -p fuji-test -- ptp-verify-xm5-recipe C4
 ```
 
 `D18C` is the Fujifilm custom-slot selector identifier recorded for the experimental X-M5 path. A descriptor result marked writable only describes camera capability; it never unlocks application writes by itself. The X-M5 returns a general error for its standard descriptor request, while its direct read-only value request succeeds; this is recorded as a model-specific protocol observation, not as write permission.
@@ -87,8 +128,13 @@ crates/ptp-core/            Standard PTP framing and safe descriptor parsing
 crates/fuji-ptp/            Fujifilm vendor property identifiers
 crates/usb-transport/       nusb backend and platform fallback boundary
 crates/camera-xm5/          X-M5 capability declaration
+data/capabilities/          Versioned USB ID + model + firmware capability records
 crates/camera-fujifilm/     Fujifilm family/model recognition and access stages
+crates/raf-preview/         Recoverable RAF preview transaction boundary (no camera adapter yet)
+assets/branding/            Source artwork for the application icon
+build-windows-exe.bat       Windows EXE build helper
 src-tauri/                  Native Tauri shell and local SQLite library
+src-tauri/icons/            Generated macOS, Windows, and platform icon assets
 src/                        React recipe workspace
 docs/                       Hardware safety and release documentation
 ```

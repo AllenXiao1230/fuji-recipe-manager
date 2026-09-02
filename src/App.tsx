@@ -1,9 +1,17 @@
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChangeEvent,
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { SafeDialog } from "./SafeDialog";
 import {
   afModes,
   colorSpaces,
   dRangePriorities,
-  display,
   driveModes,
   dynamicRanges,
   filmSimulations,
@@ -11,6 +19,7 @@ import {
   grainSizes,
   imageQualities,
   imageSizes,
+  isoAutoMaximums,
   isoSensitivities,
   makeRecipe,
   meteringModes,
@@ -27,6 +36,8 @@ import {
   type ShootingSettings,
 } from "./domain/recipe";
 import {
+  captureXm5RawPresetSnapshot,
+  clearXm5CustomSlot,
   discoverCameras,
   isDesktop,
   listCameraBackups,
@@ -38,16 +49,25 @@ import {
   saveDesktopRecipes,
   selectCameraSlot,
   writeXm5Recipe,
+  getXm5CapabilityRecord,
+  importFujifilmImageRecipe,
+  stageRafPreview,
   type CameraBackupSummary,
+  type CameraCapabilityRecord,
+  type CameraPropertyStatus,
   type CameraDiscovery,
   type InstalledPreset,
+  type ImageRecipeImport,
+  type RafPreviewStageResult,
   type PtpDeviceInfoResult,
   type PtpPropertyValueResult,
   type RecipeWriteResult,
+  type RawPtpPresetSnapshot,
   type SlotSelectionResult,
 } from "./lib/camera";
 import {
   localeOptions,
+  formatOption,
   translate,
   type CopyKey,
   type Locale,
@@ -55,9 +75,10 @@ import {
 import {
   loadRecipes,
   normalizeRecipe,
-  parseRecipeText,
+  parseRecipeCollectionText,
   saveRecipes,
 } from "./lib/recipeCodec";
+import { exportFpProfile, parseFpProfile, type FpFormat } from "./lib/fpProfile";
 
 type Page = "library" | "camera" | "installed" | "import";
 type Translator = (key: CopyKey) => string;
@@ -75,14 +96,69 @@ const numericLimits: Partial<
     { min: number; max: number; step?: number }
   >
 > = {
-  highlight: { min: -4, max: 4, step: 0.5 },
-  shadow: { min: -4, max: 4, step: 0.5 },
+  highlight: { min: -2, max: 4, step: 0.5 },
+  shadow: { min: -2, max: 4, step: 0.5 },
   color: { min: -4, max: 4 },
   sharpness: { min: -4, max: 4 },
   highIsoNoiseReduction: { min: -4, max: 4 },
   clarity: { min: -5, max: 5 },
 };
+const monochromeFilmSimulations = new Set<RecipeSettings["filmSimulation"]>([
+  "ACROS",
+  "ACROS_YE",
+  "ACROS_R",
+  "ACROS_G",
+  "MONOCHROME",
+  "MONOCHROME_YE",
+  "MONOCHROME_R",
+  "MONOCHROME_G",
+  "SEPIA",
+]);
 type DeletedRecipe = { recipe: Recipe; index: number };
+type SlotAssignments = Record<string, string>;
+const slotAssignmentsStorageKey = "fuji-recipe-manager/slot-assignments/v1";
+const isoAutoMaximumOptions = isoAutoMaximums.map(String);
+
+function formatExposureCompensation(value: number) {
+  const thirds = Math.round(value * 3);
+  if (Math.abs(value * 3 - thirds) < 0.01 && thirds % 3 !== 0) {
+    const sign = thirds > 0 ? "+" : "−";
+    return `${sign}${Math.abs(thirds) % 3}/3`;
+  }
+  return `${value > 0 ? "+" : ""}${value}`;
+}
+
+function loadSlotAssignments(): SlotAssignments {
+  try {
+    const stored = localStorage.getItem(slotAssignmentsStorageKey);
+    const parsed = stored ? JSON.parse(stored) : {};
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as SlotAssignments)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function slotAssignmentKey(usbId: string, slot: number) {
+  return `${usbId}:C${slot}`;
+}
+
+function formatDateTime(locale: Locale, value: string | number | Date) {
+  return new Intl.DateTimeFormat(locale === "zh-TW" ? "zh-TW" : "en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function isSafeExternalUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
 
 function App() {
   const [recipes, setRecipes] = useState<Recipe[]>(loadRecipes);
@@ -94,30 +170,132 @@ function App() {
       : "en",
   );
   const [query, setQuery] = useState("");
+  const [filmSimulationFilter, setFilmSimulationFilter] = useState("ALL");
+  const [tagFilter, setTagFilter] = useState("ALL");
+  const [favoriteFilter, setFavoriteFilter] = useState("ALL");
+  const [assignmentFilter, setAssignmentFilter] = useState("ALL");
+  const [cameraCompatibilityFilter, setCameraCompatibilityFilter] =
+    useState("ALL");
   const [devices, setDevices] = useState<CameraDiscovery[]>([]);
   const [status, setStatus] = useState("");
   const [paste, setPaste] = useState("");
   const [sourceUrl, setSourceUrl] = useState("");
   const [sourceAuthor, setSourceAuthor] = useState("");
+  const [imageImport, setImageImport] = useState<ImageRecipeImport>();
+  const [rafPreviewStage, setRafPreviewStage] =
+    useState<RafPreviewStageResult>();
   const [notice, setNotice] = useState("");
   const [deletedRecipe, setDeletedRecipe] = useState<DeletedRecipe>();
   const [importingRecipe, setImportingRecipe] = useState<Recipe>();
   const [backupRefresh, setBackupRefresh] = useState(0);
+  const [slotAssignments, setSlotAssignments] =
+    useState<SlotAssignments>(loadSlotAssignments);
   const [desktopLibraryReady, setDesktopLibraryReady] = useState(!isDesktop);
   const fileInput = useRef<HTMLInputElement>(null);
   const desktopSaveTimer = useRef<number>();
   const selected =
     recipes.find((recipe) => recipe.id === selectedId) ?? recipes[0];
-  const visible = useMemo(
+  const assignedSlotsByRecipe = useMemo(() => {
+    const assignments: Record<string, string[]> = {};
+    for (const [key, recipeId] of Object.entries(slotAssignments)) {
+      const slot = key.split(":C")[1];
+      if (slot) (assignments[recipeId] ??= []).push(slot);
+    }
+    return assignments;
+  }, [slotAssignments]);
+  const availableTags = useMemo(
     () =>
-      recipes.filter((recipe) =>
-        (recipe.name + " " + recipe.tags.join(" "))
-          .toLowerCase()
-          .includes(query.toLowerCase()),
-      ),
-    [recipes, query],
+      Array.from(
+        new Set(
+          recipes.flatMap((recipe) =>
+            recipe.tags.map((tag) => tag.trim()).filter(Boolean),
+          ),
+        ),
+      ).sort((left, right) => left.localeCompare(right, locale)),
+    [locale, recipes],
   );
+  const availableCameraCompatibility = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          recipes.flatMap((recipe) =>
+            recipe.cameraCompatibility.map((camera) => camera.trim()).filter(Boolean),
+          ),
+        ),
+      ).sort((left, right) => left.localeCompare(right, locale)),
+    [locale, recipes],
+  );
+  const availableFilmSimulations = useMemo(
+    () =>
+      filmSimulations.filter((filmSimulation) =>
+        recipes.some(
+          (recipe) => recipe.settings.filmSimulation === filmSimulation,
+        ),
+      ),
+    [recipes],
+  );
+  const visible = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase(locale);
+    return recipes.filter((recipe) => {
+      const searchable = [
+        recipe.name,
+        recipe.description,
+        recipe.tags.join(" "),
+        recipe.source.author,
+        recipe.cameraCompatibility.join(" "),
+      ]
+        .join(" ")
+        .toLocaleLowerCase(locale);
+      const assigned = (assignedSlotsByRecipe[recipe.id] ?? []).length > 0;
+      return (
+        (!normalizedQuery || searchable.includes(normalizedQuery)) &&
+        (filmSimulationFilter === "ALL" ||
+          recipe.settings.filmSimulation === filmSimulationFilter) &&
+        (tagFilter === "ALL" ||
+          (tagFilter === "UNTAGGED"
+            ? recipe.tags.length === 0
+            : recipe.tags.some((tag) => tag.trim() === tagFilter))) &&
+        (favoriteFilter === "ALL" || recipe.favorite) &&
+        (assignmentFilter === "ALL" ||
+          (assignmentFilter === "ASSIGNED" ? assigned : !assigned)) &&
+        (cameraCompatibilityFilter === "ALL" ||
+          recipe.cameraCompatibility.some(
+            (camera) => camera.trim() === cameraCompatibilityFilter,
+          ))
+      );
+    });
+  }, [
+    assignedSlotsByRecipe,
+    assignmentFilter,
+    cameraCompatibilityFilter,
+    favoriteFilter,
+    filmSimulationFilter,
+    locale,
+    query,
+    recipes,
+    tagFilter,
+  ]);
+  const hasActiveLibraryFilters =
+    Boolean(query.trim()) ||
+    filmSimulationFilter !== "ALL" ||
+    tagFilter !== "ALL" ||
+    favoriteFilter !== "ALL" ||
+    assignmentFilter !== "ALL" ||
+    cameraCompatibilityFilter !== "ALL";
   const t: Translator = (key) => translate(locale, key);
+  const selectedVisible =
+    selected && visible.some((recipe) => recipe.id === selected.id)
+      ? selected
+      : undefined;
+
+  function clearLibraryFilters() {
+    setQuery("");
+    setFilmSimulationFilter("ALL");
+    setTagFilter("ALL");
+    setFavoriteFilter("ALL");
+    setAssignmentFilter("ALL");
+    setCameraCompatibilityFilter("ALL");
+  }
 
   useEffect(() => {
     if (!desktopLibraryReady) return;
@@ -132,9 +310,22 @@ function App() {
     return () => window.clearTimeout(desktopSaveTimer.current);
   }, [desktopLibraryReady, recipes]);
   useEffect(() => {
+    if (
+      visible.length > 0 &&
+      !visible.some((recipe) => recipe.id === selectedId)
+    )
+      setSelectedId(visible[0].id);
+  }, [selectedId, visible]);
+  useEffect(() => {
     localStorage.setItem("fuji-recipe-manager/locale", locale);
     document.documentElement.lang = locale;
   }, [locale]);
+  useEffect(() => {
+    localStorage.setItem(
+      slotAssignmentsStorageKey,
+      JSON.stringify(slotAssignments),
+    );
+  }, [slotAssignments]);
   useEffect(() => {
     if (!isDesktop) return;
     void loadDesktopRecipes()
@@ -221,19 +412,46 @@ function App() {
     URL.revokeObjectURL(url);
     setNotice(locale === "zh-TW" ? "Recipe 已匯出。" : "Recipe exported.");
   }
+  function exportFpRecipe(format: FpFormat) {
+    if (!selected) return;
+    const { xml, report } = exportFpProfile(selected, format);
+    const blob = new Blob([xml], { type: "application/xml" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download =
+      (selected.name.replaceAll(/[^a-z0-9]+/gi, "-").toLowerCase() ||
+        "recipe") +
+      `.${format}`;
+    link.click();
+    URL.revokeObjectURL(url);
+    const warning = report.warnings[0];
+    setNotice(
+      locale === "zh-TW"
+        ? `${format} 已匯出。${warning ? ` 注意：${warning}` : ""}`
+        : `${format} exported.${warning ? ` Note: ${warning}` : ""}`,
+    );
+  }
   function importRecipe(value = paste) {
     try {
-      const recipe = parseRecipeText(value, {
+      const imported = parseRecipeCollectionText(value, {
         url: sourceUrl,
         author: sourceAuthor,
       });
-      setRecipes((items) => [recipe, ...items]);
-      setSelectedId(recipe.id);
+      setRecipes((items) => {
+        const importedIds = new Set(imported.map((recipe) => recipe.id));
+        return [...imported, ...items.filter((recipe) => !importedIds.has(recipe.id))];
+      });
+      setSelectedId(imported[0].id);
       setPaste("");
       setSourceUrl("");
       setSourceAuthor("");
       setPage("library");
-      setNotice(locale === "zh-TW" ? "Recipe 已匯入。" : "Recipe imported.");
+      setNotice(
+        locale === "zh-TW"
+          ? `已匯入 ${imported.length} 組 Recipe。`
+          : `${imported.length} Recipe(s) imported.`,
+      );
     } catch {
       setNotice(
         locale === "zh-TW"
@@ -247,9 +465,123 @@ function App() {
     if (!file) return;
     file
       .text()
-      .then(importRecipe)
+      .then((text) => {
+        if (/\.fp[123]$/i.test(file.name)) {
+          const { recipe, report } = parseFpProfile(text, file.name);
+          setRecipes((items) => [recipe, ...items]);
+          setSelectedId(recipe.id);
+          setPage("library");
+          const preservation =
+            report.unmappedProperties.length || report.omittedSensitiveProperties.length
+              ? locale === "zh-TW"
+                ? `；保留 ${report.unmappedProperties.length} 個未映射欄位，移除 ${report.omittedSensitiveProperties.length} 個敏感欄位。`
+                : `; retained ${report.unmappedProperties.length} unmapped field(s) and removed ${report.omittedSensitiveProperties.length} sensitive field(s).`
+              : "";
+          setNotice(`${file.name} ${locale === "zh-TW" ? "已匯入" : "imported"}${preservation}`);
+          return;
+        }
+        importRecipe(text);
+      })
       .catch(() => setNotice(t("fileReadFailure")));
     event.target.value = "";
+  }
+  async function importImageRecipe() {
+    if (!isDesktop) {
+      setNotice(t("imageImportDesktopOnly"));
+      return;
+    }
+    try {
+      const path = await open({
+        multiple: false,
+        directory: false,
+        filters: [
+          { name: "Fujifilm image metadata", extensions: ["jpg", "jpeg", "raf"] },
+        ],
+      });
+      if (!path || Array.isArray(path)) return;
+      const imported = await importFujifilmImageRecipe(path);
+      const base = makeRecipe(imported.fileName.replace(/\.[^.]+$/, "") || "EXIF Recipe");
+      const settingsPatch = imported.settings as Partial<RecipeSettings>;
+      const whiteBalancePatch =
+        settingsPatch.whiteBalance as Partial<RecipeSettings["whiteBalance"]> | undefined;
+      const shootingPatch = imported.shootingSettings as Partial<ShootingSettings>;
+      const recipe = normalizeRecipe({
+        ...base,
+        cameraCompatibility: [imported.model],
+        settings: {
+          ...base.settings,
+          ...settingsPatch,
+          whiteBalance: {
+            ...base.settings.whiteBalance,
+            ...whiteBalancePatch,
+          },
+        },
+        shootingSettings: { ...base.shootingSettings, ...shootingPatch },
+      });
+      setRecipes((items) => [recipe, ...items]);
+      setSelectedId(recipe.id);
+      setImageImport(imported);
+      const recognized = imported.fieldStatuses.filter(
+        (field) => field.status === "recognized",
+      ).length;
+      setNotice(
+        locale === "zh-TW"
+          ? `已由 ${imported.fileName} 建立 Recipe；已辨識 ${recognized} 個欄位。`
+          : `Recipe created from ${imported.fileName}; ${recognized} field(s) recognized.`,
+      );
+    } catch (error) {
+      setNotice(String(error));
+    }
+  }
+  async function stageRafPreviewFile() {
+    if (!isDesktop) {
+      setNotice(t("rafPreviewDesktopOnly"));
+      return;
+    }
+    if (!selected) return;
+    try {
+      const path = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "Fujifilm RAF", extensions: ["raf"] }],
+      });
+      if (!path || Array.isArray(path)) return;
+      const staged = await stageRafPreview(path, selected.id);
+      setRafPreviewStage(staged);
+      setNotice(t("rafPreviewStaged"));
+    } catch (error) {
+      setNotice(String(error));
+    }
+  }
+  function assignRecipeToSlot(usbId: string, slot: number, recipeId: string) {
+    setSlotAssignments((assignments) => ({
+      ...assignments,
+      [slotAssignmentKey(usbId, slot)]: recipeId,
+    }));
+  }
+  function clearRecipeSlotAssignment(usbId: string, slot: number) {
+    setSlotAssignments((assignments) => {
+      const next = { ...assignments };
+      delete next[slotAssignmentKey(usbId, slot)];
+      return next;
+    });
+  }
+  function syncInstalledPresetAssignments(
+    usbId: string,
+    presets: InstalledPreset[],
+  ) {
+    setSlotAssignments((assignments) => {
+      const next = { ...assignments };
+      for (const preset of presets) {
+        const key = slotAssignmentKey(usbId, preset.slot);
+        const matches = recipes.filter(
+          (recipe) => recipe.name.trim() === preset.name.trim(),
+        );
+        if (preset.name && matches.length === 1) next[key] = matches[0].id;
+        else delete next[key];
+      }
+      return next;
+    });
   }
 
   const title =
@@ -273,16 +605,23 @@ function App() {
         </div>
         <button
           className={"nav " + (page === "library" ? "active" : "")}
+          aria-current={page === "library" ? "page" : undefined}
           onClick={() => setPage("library")}
         >
           {t("library")} <b>{recipes.length}</b>
         </button>
         <button
           className={"nav " + (page === "camera" ? "active" : "")}
+          aria-current={page === "camera" ? "page" : undefined}
           onClick={() => setPage("camera")}
         >
           {t("camera")}{" "}
           <i
+            aria-label={
+              devices.some((device) => device.isFujifilm)
+                ? t("cameraConnected")
+                : t("cameraDisconnected")
+            }
             className={
               devices.some((device) => device.isFujifilm) ? "connected" : ""
             }
@@ -290,12 +629,14 @@ function App() {
         </button>
         <button
           className={"nav " + (page === "installed" ? "active" : "")}
+          aria-current={page === "installed" ? "page" : undefined}
           onClick={() => setPage("installed")}
         >
           {t("installed")}
         </button>
         <button
           className={"nav " + (page === "import" ? "active" : "")}
+          aria-current={page === "import" ? "page" : undefined}
           onClick={() => setPage("import")}
         >
           {t("importRecipe")}
@@ -319,7 +660,7 @@ function App() {
           <p>{t("recipesStayLocal")}</p>
         </div>
       </aside>
-      <main className="workspace">
+      <main className={`workspace workspace-${page}`}>
         <header>
           <div>
             <h1>{title}</h1>
@@ -355,6 +696,100 @@ function App() {
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                 />
+                <div className="library-filters" aria-label={t("filterRecipes")}>
+                  <div className="filter-heading">
+                    <span>{t("filterRecipes")}</span>
+                    {hasActiveLibraryFilters && (
+                      <button
+                        className="filter-reset"
+                        type="button"
+                        onClick={clearLibraryFilters}
+                      >
+                        {t("clearFilters")}
+                      </button>
+                    )}
+                  </div>
+                  <label>
+                    <span>{t("filterFilmSimulation")}</span>
+                    <select
+                      aria-label={t("filterFilmSimulation")}
+                      value={filmSimulationFilter}
+                      onChange={(event) =>
+                        setFilmSimulationFilter(event.target.value)
+                      }
+                    >
+                      <option value="ALL">{t("allFilmSimulations")}</option>
+                      {availableFilmSimulations.map((filmSimulation) => (
+                        <option key={filmSimulation} value={filmSimulation}>
+                          {formatOption(locale, filmSimulation)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>{t("filterTag")}</span>
+                    <select
+                      aria-label={t("filterTag")}
+                      value={tagFilter}
+                      onChange={(event) => setTagFilter(event.target.value)}
+                    >
+                      <option value="ALL">{t("allTags")}</option>
+                      <option value="UNTAGGED">{t("untaged")}</option>
+                      {availableTags.map((tag) => (
+                        <option key={tag} value={tag}>
+                          {tag}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>{t("filterFavorites")}</span>
+                    <select
+                      aria-label={t("filterFavorites")}
+                      value={favoriteFilter}
+                      onChange={(event) =>
+                        setFavoriteFilter(event.target.value)
+                      }
+                    >
+                      <option value="ALL">{t("allRecipes")}</option>
+                      <option value="FAVORITES">{t("favoritesOnly")}</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>{t("filterAssignment")}</span>
+                    <select
+                      aria-label={t("filterAssignment")}
+                      value={assignmentFilter}
+                      onChange={(event) =>
+                        setAssignmentFilter(event.target.value)
+                      }
+                    >
+                      <option value="ALL">{t("allAssignments")}</option>
+                      <option value="ASSIGNED">{t("assignedToSlot")}</option>
+                      <option value="UNASSIGNED">{t("notAssignedToSlot")}</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>{t("filterCameraCompatibility")}</span>
+                    <select
+                      aria-label={t("filterCameraCompatibility")}
+                      value={cameraCompatibilityFilter}
+                      onChange={(event) =>
+                        setCameraCompatibilityFilter(event.target.value)
+                      }
+                    >
+                      <option value="ALL">{t("allCameras")}</option>
+                      {availableCameraCompatibility.map((camera) => (
+                        <option key={camera} value={camera}>
+                          {camera}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <p className="filter-summary" aria-live="polite">
+                    {visible.length} / {recipes.length} {t("recipes")}
+                  </p>
+                </div>
                 <button className="primary" onClick={createRecipe}>
                   {t("newRecipe")}
                 </button>
@@ -363,31 +798,36 @@ function App() {
                 </button>
               </div>
               <div className="cards">
-                {visible.map((recipe) => (
-                  <button
-                    key={recipe.id}
-                    className={
-                      "recipe-card " +
-                      (recipe.id === selected?.id ? "selected" : "")
-                    }
-                    onClick={() => setSelectedId(recipe.id)}
-                  >
-                    <span>{recipe.favorite ? "★" : "☆"}</span>
-                    <strong>{recipe.name}</strong>
-                    <small>
-                      {display(recipe.settings.filmSimulation)} ·{" "}
-                      {recipe.tags.join(" / ") || t("untaged")}
-                    </small>
-                  </button>
-                ))}
+                {visible.length ? (
+                  visible.map((recipe) => (
+                    <RecipeCard
+                      key={recipe.id}
+                      recipe={recipe}
+                      selected={recipe.id === selectedVisible?.id}
+                      assignedSlots={assignedSlotsByRecipe[recipe.id] ?? []}
+                      locale={locale}
+                      untagged={t("untaged")}
+                      onSelect={setSelectedId}
+                    />
+                  ))
+                ) : (
+                  <div className="empty-library" role="status">
+                    <strong>{t("noRecipeResults")}</strong>
+                    <button className="secondary" onClick={clearLibraryFilters}>
+                      {t("clearFilters")}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
-            {selected && (
+            {selectedVisible && (
               <RecipeEditor
-                recipe={selected}
+                recipe={selectedVisible}
                 t={t}
+                formatOption={(value) => formatOption(locale, value)}
                 onChange={updateRecipe}
                 onExport={exportRecipe}
+                onExportFp={exportFpRecipe}
                 onDelete={removeRecipe}
                 onImport={() => setImportingRecipe(selected)}
               />
@@ -400,11 +840,18 @@ function App() {
             status={status || t("noCamera")}
             onScan={scanCamera}
             refreshKey={backupRefresh}
+            locale={locale}
             t={t}
           />
         )}
         {page === "installed" && (
-          <InstalledPresetsPanel devices={devices} onScan={scanCamera} t={t} />
+          <InstalledPresetsPanel
+            devices={devices}
+            onScan={scanCamera}
+            onPresetsRead={syncInstalledPresetAssignments}
+            onSlotCleared={clearRecipeSlotAssignment}
+            t={t}
+          />
         )}
         {page === "import" && (
           <section className="import-panel">
@@ -445,24 +892,89 @@ function App() {
                 ref={fileInput}
                 hidden
                 type="file"
-                accept=".frecipe,.json,.txt,application/json,text/plain"
+                accept=".frecipe,.json,.txt,.fp1,.fp2,.fp3,application/json,text/plain,application/xml"
                 onChange={importFile}
               />
+              <button
+                className="secondary"
+                disabled={!isDesktop}
+                onClick={() => void importImageRecipe()}
+              >
+                {t("importImageRecipe")}
+              </button>
+              <button
+                className="secondary"
+                disabled={!isDesktop || !selected}
+                onClick={() => void stageRafPreviewFile()}
+              >
+                {t("stageRafPreview")}
+              </button>
               <button className="primary" onClick={() => importRecipe()}>
                 {t("parseSave")}
               </button>
             </div>
+            {imageImport && (
+              <section className="image-import-summary">
+                <strong>{t("imageImportSummary")}</strong>
+                <p>
+                  {imageImport.fileName} · {imageImport.model}
+                </p>
+                <ul>
+                  {imageImport.fieldStatuses.map((field) => (
+                    <li key={field.key}>
+                      <span>{field.key}</span>
+                      <em className={field.status}>{
+                        field.status === "recognized"
+                          ? t("imageFieldRecognized")
+                          : t("imageFieldUnavailable")
+                      }</em>
+                      <small>{field.detail}</small>
+                    </li>
+                  ))}
+                </ul>
+                {imageImport.warnings.map((warning) => (
+                  <small key={warning}>{warning}</small>
+                ))}
+              </section>
+            )}
+            {rafPreviewStage && (
+              <section className="image-import-summary">
+                <strong>{t("rafPreviewStatus")}</strong>
+                <p>{rafPreviewStage.state}</p>
+                {rafPreviewStage.recoveryAction && (
+                  <small>{rafPreviewStage.recoveryAction}</small>
+                )}
+              </section>
+            )}
           </section>
         )}
         {importingRecipe && (
           <CameraImportDialog
             recipe={importingRecipe}
             devices={devices}
+            locale={locale}
             t={t}
             onScan={scanCamera}
             onClose={() => setImportingRecipe(undefined)}
+            onSnapshot={(snapshot) => {
+              updateRecipe({
+                ...importingRecipe,
+                interoperability: {
+                  ...importingRecipe.interoperability,
+                  rawPtpPresetSnapshot: snapshot,
+                },
+              });
+              setNotice(
+                `${t("rawSnapshotCaptured")}: C${snapshot.slot} · ${snapshot.properties.length} ${t("rawSnapshotProperties")}.`,
+              );
+            }}
             onCompleted={(result) => {
               setBackupRefresh((value) => value + 1);
+              assignRecipeToSlot(
+                result.usbId,
+                result.slot,
+                importingRecipe.id,
+              );
               setNotice(
                 `C${result.slot} “${result.presetName}” — ${t("importCompleted")}: ${result.backupId}.`,
               );
@@ -475,18 +987,59 @@ function App() {
   );
 }
 
+const RecipeCard = memo(function RecipeCard({
+  recipe,
+  selected,
+  assignedSlots,
+  locale,
+  untagged,
+  onSelect,
+}: {
+  recipe: Recipe;
+  selected: boolean;
+  assignedSlots: string[];
+  locale: Locale;
+  untagged: string;
+  onSelect: (recipeId: string) => void;
+}) {
+  return (
+    <button
+      className={"recipe-card " + (selected ? "selected" : "")}
+      onClick={() => onSelect(recipe.id)}
+    >
+      <span>{recipe.favorite ? "★" : "☆"}</span>
+      <div className="recipe-card-title">
+        <strong>{recipe.name}</strong>
+        {assignedSlots.map((slot) => (
+          <span key={slot} className="slot-assignment">
+            C{slot}
+          </span>
+        ))}
+      </div>
+      <small>
+        {formatOption(locale, recipe.settings.filmSimulation)} ·{" "}
+        {recipe.tags.join(" / ") || untagged}
+      </small>
+    </button>
+  );
+});
+
 function RecipeEditor({
   recipe,
   t,
+  formatOption,
   onChange,
   onExport,
+  onExportFp,
   onDelete,
   onImport,
 }: {
   recipe: Recipe;
   t: Translator;
+  formatOption: (value: string) => string;
   onChange: (recipe: Recipe) => void;
   onExport: () => void;
+  onExportFp: (format: FpFormat) => void;
   onDelete: () => void;
   onImport: () => void;
 }) {
@@ -504,6 +1057,22 @@ function RecipeEditor({
       ...recipe,
       shootingSettings: { ...recipe.shootingSettings, [key]: value },
     });
+  const selectedIso = Number(
+    recipe.shootingSettings.isoSensitivity.replace("ISO_", ""),
+  );
+  const dynamicRangeNeedsHigherIso =
+    (recipe.settings.dynamicRange === "DR200" && selectedIso > 0 && selectedIso < 320) ||
+    (recipe.settings.dynamicRange === "DR400" && selectedIso > 0 && selectedIso < 640);
+  const settingWarnings = [
+    recipe.settings.stillFormat === "HEIF" &&
+      (recipe.settings.clarity !== 0 || recipe.settings.colorSpace !== "SRGB")
+      ? t("heifDependency")
+      : undefined,
+    recipe.settings.dRangePriority !== "OFF"
+      ? t("dRangePriorityDependency")
+      : undefined,
+    dynamicRangeNeedsHigherIso ? t("dynamicRangeIsoDependency") : undefined,
+  ].filter((warning): warning is string => Boolean(warning));
   return (
     <article className="editor">
       <div className="editor-title">
@@ -574,22 +1143,26 @@ function RecipeEditor({
             }
           />
         </label>
-        {recipe.source.url && (
+        {isSafeExternalUrl(recipe.source.url) && (
           <a href={recipe.source.url} target="_blank" rel="noreferrer">
             {t("openSource")}
           </a>
         )}
+        {recipe.source.url && !isSafeExternalUrl(recipe.source.url) && (
+          <small className="field-error">{t("sourceUrlInvalid")}</small>
+        )}
       </div>
       <section className="recipe-settings-section">
         <div className="settings-section-heading">
-          <p className="eyebrow">{t("imageQualitySettings")}</p>
-          <p>{t("imageQualitySettingsHelp")}</p>
+          <p className="eyebrow">{t("creativeRecipeSettings")}</p>
+          <p>{t("creativeRecipeSettingsHelp")}</p>
         </div>
         <div className="settings-grid">
           <Select
             label={t("filmSimulation")}
             value={recipe.settings.filmSimulation}
             options={filmSimulations}
+            formatOption={formatOption}
             onChange={(value) =>
               setting(
                 "filmSimulation",
@@ -597,29 +1170,53 @@ function RecipeEditor({
               )
             }
           />
+          {monochromeFilmSimulations.has(recipe.settings.filmSimulation) && (
+            <>
+              <NumberControl
+                label={t("monochromaticWarmCool")}
+                value={recipe.settings.monochromaticColor.warmCool}
+                min={-18}
+                max={18}
+                t={t}
+                onChange={(warmCool) =>
+                  setting("monochromaticColor", {
+                    ...recipe.settings.monochromaticColor,
+                    warmCool,
+                  })
+                }
+              />
+              <NumberControl
+                label={t("monochromaticMagentaGreen")}
+                value={recipe.settings.monochromaticColor.magentaGreen}
+                min={-18}
+                max={18}
+                t={t}
+                onChange={(magentaGreen) =>
+                  setting("monochromaticColor", {
+                    ...recipe.settings.monochromaticColor,
+                    magentaGreen,
+                  })
+                }
+              />
+              <small className="field-error mono-write-lock">
+                {t("monochromaticWriteLocked")}
+              </small>
+            </>
+          )}
           <Select
             label={t("dynamicRange")}
             value={recipe.settings.dynamicRange}
             options={dynamicRanges}
+            formatOption={formatOption}
             onChange={(value) =>
               setting("dynamicRange", value as RecipeSettings["dynamicRange"])
-            }
-          />
-          <Select
-            label={t("dRangePriority")}
-            value={recipe.settings.dRangePriority}
-            options={dRangePriorities}
-            onChange={(value) =>
-              setting(
-                "dRangePriority",
-                value as RecipeSettings["dRangePriority"],
-              )
             }
           />
           <Select
             label={t("whiteBalance")}
             value={recipe.settings.whiteBalance.mode}
             options={whiteBalances}
+            formatOption={formatOption}
             onChange={(value) =>
               setting("whiteBalance", {
                 ...recipe.settings.whiteBalance,
@@ -664,6 +1261,7 @@ function RecipeEditor({
             label={t("grainStrength")}
             value={recipe.settings.grain.strength}
             options={strengths}
+            formatOption={formatOption}
             onChange={(value) =>
               setting("grain", {
                 ...recipe.settings.grain,
@@ -675,6 +1273,7 @@ function RecipeEditor({
             label={t("grainSize")}
             value={recipe.settings.grain.size}
             options={grainSizes}
+            formatOption={formatOption}
             onChange={(value) =>
               setting("grain", {
                 ...recipe.settings.grain,
@@ -686,6 +1285,7 @@ function RecipeEditor({
             label={t("colorChrome")}
             value={recipe.settings.colorChromeEffect}
             options={strengths}
+            formatOption={formatOption}
             onChange={(value) =>
               setting(
                 "colorChromeEffect",
@@ -697,6 +1297,7 @@ function RecipeEditor({
             label={t("colorChromeBlue")}
             value={recipe.settings.colorChromeFxBlue}
             options={strengths}
+            formatOption={formatOption}
             onChange={(value) =>
               setting(
                 "colorChromeFxBlue",
@@ -705,76 +1306,15 @@ function RecipeEditor({
             }
           />
           <Select
-            label={t("portraitEnhancer")}
-            value={recipe.settings.portraitEnhancer}
-            options={portraitEnhancerLevels}
+            label={t("smoothSkinEffect")}
+            value={recipe.settings.smoothSkinEffect}
+            options={strengths}
+            formatOption={formatOption}
             onChange={(value) =>
               setting(
-                "portraitEnhancer",
-                value as RecipeSettings["portraitEnhancer"],
+                "smoothSkinEffect",
+                value as RecipeSettings["smoothSkinEffect"],
               )
-            }
-          />
-          <Select
-            label={t("longExposureNr")}
-            value={recipe.settings.longExposureNoiseReduction}
-            options={onOff}
-            onChange={(value) =>
-              setting(
-                "longExposureNoiseReduction",
-                value as RecipeSettings["longExposureNoiseReduction"],
-              )
-            }
-          />
-          <Select
-            label={t("lensModulationOptimizer")}
-            value={recipe.settings.lensModulationOptimizer}
-            options={onOff}
-            onChange={(value) =>
-              setting(
-                "lensModulationOptimizer",
-                value as RecipeSettings["lensModulationOptimizer"],
-              )
-            }
-          />
-          <Select
-            label={t("colorSpace")}
-            value={recipe.settings.colorSpace}
-            options={colorSpaces}
-            onChange={(value) =>
-              setting("colorSpace", value as RecipeSettings["colorSpace"])
-            }
-          />
-          <Select
-            label={t("imageSize")}
-            value={recipe.settings.imageSize}
-            options={imageSizes}
-            onChange={(value) =>
-              setting("imageSize", value as RecipeSettings["imageSize"])
-            }
-          />
-          <Select
-            label={t("imageQuality")}
-            value={recipe.settings.imageQuality}
-            options={imageQualities}
-            onChange={(value) =>
-              setting("imageQuality", value as RecipeSettings["imageQuality"])
-            }
-          />
-          <Select
-            label={t("rawRecording")}
-            value={recipe.settings.rawRecording}
-            options={rawRecordingOptions}
-            onChange={(value) =>
-              setting("rawRecording", value as RecipeSettings["rawRecording"])
-            }
-          />
-          <Select
-            label={t("stillFormat")}
-            value={recipe.settings.stillFormat}
-            options={stillFormats}
-            onChange={(value) =>
-              setting("stillFormat", value as RecipeSettings["stillFormat"])
             }
           />
           {numericKeys.map((key) => (
@@ -801,6 +1341,117 @@ function RecipeEditor({
           ))}
         </div>
       </section>
+      <section className="recipe-settings-section capture-settings-section">
+        <div className="settings-section-heading">
+          <p className="eyebrow">{t("cameraCaptureSettings")}</p>
+          <p>{t("cameraCaptureSettingsHelp")}</p>
+        </div>
+        {settingWarnings.length > 0 && (
+          <aside className="setting-warnings" aria-live="polite">
+            <strong>{t("settingDependencyTitle")}</strong>
+            <ul>
+              {settingWarnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          </aside>
+        )}
+        <div className="settings-grid">
+          <Select
+            label={t("dRangePriority")}
+            value={recipe.settings.dRangePriority}
+            options={dRangePriorities}
+            formatOption={formatOption}
+            onChange={(value) =>
+              setting(
+                "dRangePriority",
+                value as RecipeSettings["dRangePriority"],
+              )
+            }
+          />
+          <Select
+            label={t("portraitEnhancer")}
+            value={recipe.settings.portraitEnhancer}
+            options={portraitEnhancerLevels}
+            formatOption={formatOption}
+            onChange={(value) =>
+              setting(
+                "portraitEnhancer",
+                value as RecipeSettings["portraitEnhancer"],
+              )
+            }
+          />
+          <Select
+            label={t("longExposureNr")}
+            value={recipe.settings.longExposureNoiseReduction}
+            options={onOff}
+            formatOption={formatOption}
+            onChange={(value) =>
+              setting(
+                "longExposureNoiseReduction",
+                value as RecipeSettings["longExposureNoiseReduction"],
+              )
+            }
+          />
+          <Select
+            label={t("lensModulationOptimizer")}
+            value={recipe.settings.lensModulationOptimizer}
+            options={onOff}
+            formatOption={formatOption}
+            onChange={(value) =>
+              setting(
+                "lensModulationOptimizer",
+                value as RecipeSettings["lensModulationOptimizer"],
+              )
+            }
+          />
+          <Select
+            label={t("colorSpace")}
+            value={recipe.settings.colorSpace}
+            options={colorSpaces}
+            formatOption={formatOption}
+            onChange={(value) =>
+              setting("colorSpace", value as RecipeSettings["colorSpace"])
+            }
+          />
+          <Select
+            label={t("imageSize")}
+            value={recipe.settings.imageSize}
+            options={imageSizes}
+            formatOption={formatOption}
+            onChange={(value) =>
+              setting("imageSize", value as RecipeSettings["imageSize"])
+            }
+          />
+          <Select
+            label={t("imageQuality")}
+            value={recipe.settings.imageQuality}
+            options={imageQualities}
+            formatOption={formatOption}
+            onChange={(value) =>
+              setting("imageQuality", value as RecipeSettings["imageQuality"])
+            }
+          />
+          <Select
+            label={t("rawRecording")}
+            value={recipe.settings.rawRecording}
+            options={rawRecordingOptions}
+            formatOption={formatOption}
+            onChange={(value) =>
+              setting("rawRecording", value as RecipeSettings["rawRecording"])
+            }
+          />
+          <Select
+            label={t("stillFormat")}
+            value={recipe.settings.stillFormat}
+            options={stillFormats}
+            formatOption={formatOption}
+            onChange={(value) =>
+              setting("stillFormat", value as RecipeSettings["stillFormat"])
+            }
+          />
+        </div>
+      </section>
       <section className="recipe-settings-section shooting-settings-section">
         <div className="settings-section-heading">
           <p className="eyebrow">{t("shootingSettings")}</p>
@@ -811,10 +1462,23 @@ function RecipeEditor({
             label={t("isoSensitivity")}
             value={recipe.shootingSettings.isoSensitivity}
             options={isoSensitivities}
+            formatOption={formatOption}
             onChange={(value) =>
               shootingSetting(
                 "isoSensitivity",
                 value as ShootingSettings["isoSensitivity"],
+              )
+            }
+          />
+          <Select
+            label={t("isoAutoMaximum")}
+            value={String(recipe.shootingSettings.isoAutoMaximum)}
+            options={isoAutoMaximumOptions}
+            formatOption={(value) => `ISO ${value}`}
+            onChange={(value) =>
+              shootingSetting(
+                "isoAutoMaximum",
+                Number(value) as ShootingSettings["isoAutoMaximum"],
               )
             }
           />
@@ -823,6 +1487,8 @@ function RecipeEditor({
             value={recipe.shootingSettings.exposureCompensation}
             min={-5}
             max={5}
+            step={1 / 3}
+            formatValue={formatExposureCompensation}
             t={t}
             onChange={(value) => shootingSetting("exposureCompensation", value)}
           />
@@ -830,6 +1496,7 @@ function RecipeEditor({
             label={t("meteringMode")}
             value={recipe.shootingSettings.meteringMode}
             options={meteringModes}
+            formatOption={formatOption}
             onChange={(value) =>
               shootingSetting(
                 "meteringMode",
@@ -841,6 +1508,7 @@ function RecipeEditor({
             label={t("focusMode")}
             value={recipe.shootingSettings.focusMode}
             options={focusModes}
+            formatOption={formatOption}
             onChange={(value) =>
               shootingSetting(
                 "focusMode",
@@ -852,6 +1520,7 @@ function RecipeEditor({
             label={t("afMode")}
             value={recipe.shootingSettings.afMode}
             options={afModes}
+            formatOption={formatOption}
             onChange={(value) =>
               shootingSetting("afMode", value as ShootingSettings["afMode"])
             }
@@ -860,6 +1529,7 @@ function RecipeEditor({
             label={t("driveMode")}
             value={recipe.shootingSettings.driveMode}
             options={driveModes}
+            formatOption={formatOption}
             onChange={(value) =>
               shootingSetting(
                 "driveMode",
@@ -871,6 +1541,7 @@ function RecipeEditor({
             label={t("shutterType")}
             value={recipe.shootingSettings.shutterType}
             options={shutterTypes}
+            formatOption={formatOption}
             onChange={(value) =>
               shootingSetting(
                 "shutterType",
@@ -887,6 +1558,15 @@ function RecipeEditor({
         <button className="secondary" onClick={onExport}>
           {t("exportJson")}
         </button>
+        <button className="secondary" onClick={() => onExportFp("FP1")}>
+          {t("exportFp1")}
+        </button>
+        <button className="secondary" onClick={() => onExportFp("FP2")}>
+          {t("exportFp2")}
+        </button>
+        <button className="secondary" onClick={() => onExportFp("FP3")}>
+          {t("exportFp3")}
+        </button>
         <button className="primary" onClick={onImport}>
           {t("importToCamera")}
         </button>
@@ -899,11 +1579,13 @@ function Select({
   label,
   value,
   options,
+  formatOption,
   onChange,
 }: {
   label: string;
   value: string;
   options: readonly string[];
+  formatOption: (value: string) => string;
   onChange: (value: string) => void;
 }) {
   return (
@@ -912,7 +1594,7 @@ function Select({
       <select value={value} onChange={(event) => onChange(event.target.value)}>
         {options.map((option) => (
           <option key={option} value={option}>
-            {display(option)}
+            {formatOption(option)}
           </option>
         ))}
       </select>
@@ -925,6 +1607,7 @@ function NumberControl({
   min,
   max,
   step = 1,
+  formatValue,
   t,
   onChange,
 }: {
@@ -933,6 +1616,7 @@ function NumberControl({
   min?: number;
   max?: number;
   step?: number;
+  formatValue?: (value: number) => string;
   t: Translator;
   onChange: (value: number) => void;
 }) {
@@ -957,8 +1641,7 @@ function NumberControl({
           −
         </button>
         <output aria-live="polite">
-          {value > 0 ? "+" : ""}
-          {value}
+          {formatValue ? formatValue(value) : `${value > 0 ? "+" : ""}${value}`}
         </output>
         <button
           aria-label={`${t("increase")} ${label}`}
@@ -1042,28 +1725,43 @@ function NumberPair({
 function CameraImportDialog({
   recipe,
   devices,
+  locale,
   t,
   onScan,
   onClose,
+  onSnapshot,
   onCompleted,
 }: {
   recipe: Recipe;
   devices: CameraDiscovery[];
+  locale: Locale;
   t: Translator;
   onScan: () => Promise<CameraDiscovery[]>;
   onClose: () => void;
+  onSnapshot: (snapshot: RawPtpPresetSnapshot) => void;
   onCompleted: (result: RecipeWriteResult) => void;
 }) {
   const [slot, setSlot] = useState<number>();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [cameraName, setCameraName] = useState(recipe.name.slice(0, 31));
+  const [capability, setCapability] = useState<CameraCapabilityRecord>();
+  const [capabilityError, setCapabilityError] = useState("");
+  const [rawSnapshot, setRawSnapshot] = useState<RawPtpPresetSnapshot>();
   const writeBlockers = xm5WriteBlockers(recipe.settings);
+  const cropImageSizeSelected = recipe.settings.imageSize.endsWith("_1_25X_CROP");
   const cameraNameIsVerified = /^[\x20-\x7E]+$/.test(cameraName.trim());
   const camera = devices.find(
     (device) =>
       device.isFujifilm && device.ptpInterfaceDetected && device.writeEnabled,
   );
+
+  useEffect(() => {
+    if (!isDesktop) return;
+    getXm5CapabilityRecord()
+      .then(setCapability)
+      .catch(() => setCapabilityError("Unable to load the local capability record."));
+  }, []);
 
   async function scan() {
     setBusy(true);
@@ -1096,14 +1794,31 @@ function CameraImportDialog({
     }
   }
 
+  async function captureRawSnapshot() {
+    if (!camera || !slot) return;
+    setBusy(true);
+    setMessage(`${t("captureRawSnapshot")} C${slot}…`);
+    try {
+      const snapshot = await captureXm5RawPresetSnapshot(camera.usbId, slot);
+      setRawSnapshot(snapshot);
+      onSnapshot(snapshot);
+      setMessage(
+        `${t("rawSnapshotCaptured")}: ${snapshot.properties.length} ${t("rawSnapshotProperties")}.`,
+      );
+    } catch (error) {
+      const detail = String(error);
+      setMessage(detail.includes("exclusive access") ? t("ptpBusy") : detail);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <div className="modal-backdrop">
-      <section
-        className="camera-import-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="camera-import-title"
-      >
+    <SafeDialog
+      labelledBy="camera-import-title"
+      onClose={onClose}
+      closeDisabled={busy}
+    >
         <header>
           <div>
             <p className="eyebrow">{t("importToCamera")}</p>
@@ -1112,6 +1827,7 @@ function CameraImportDialog({
           <button
             className="notice-dismiss"
             aria-label={t("cancel")}
+            data-dialog-initial-focus
             disabled={busy}
             onClick={onClose}
           >
@@ -1170,9 +1886,39 @@ function CameraImportDialog({
           <strong>{t("restorePoint")}</strong>
           <p>{t("restorePointDetail")}</p>
         </div>
+        {slot && (
+          <div className="raw-snapshot-card">
+            <strong>{t("rawSnapshot")}</strong>
+            <p>{t("rawSnapshotDetail")}</p>
+            <button
+              className="secondary"
+              disabled={busy || !camera}
+              onClick={captureRawSnapshot}
+            >
+              {t("captureRawSnapshot")} C{slot}
+            </button>
+            {rawSnapshot && (
+              <small>
+                {t("rawSnapshotCaptured")}: {rawSnapshot.properties.length}{" "}
+                {t("rawSnapshotProperties")};{" "}
+                {rawSnapshot.unreadablePropertyCodes.length}{" "}
+                {t("rawSnapshotUnavailable")}.
+              </small>
+            )}
+          </div>
+        )}
+        {capability && (
+          <CapabilityStatusPanel capability={capability} locale={locale} />
+        )}
+        {capabilityError && <p className="field-error">{capabilityError}</p>}
         {writeBlockers.length > 0 && (
           <p className="probe-message" role="alert">
             {t("writeValueUnsupported")} {writeBlockers.join(", ")}
+          </p>
+        )}
+        {cropImageSizeSelected && (
+          <p className="probe-message" role="alert">
+            {t("cropImageSizeLocked")}
           </p>
         )}
         {message && (
@@ -1200,21 +1946,86 @@ function CameraImportDialog({
             {slot ? ` C${slot}` : ""}
           </button>
         </footer>
-      </section>
-    </div>
+    </SafeDialog>
+  );
+}
+
+function CapabilityStatusPanel({
+  capability,
+  locale,
+}: {
+  capability: CameraCapabilityRecord;
+  locale: Locale;
+}) {
+  const statusLabel: Record<CameraPropertyStatus, string> =
+    locale === "zh-TW"
+      ? {
+          write_verified: "已驗證可寫入",
+          write_rejected: "相機拒絕（201C）",
+          read_detected_unverified: "已探測，尚未驗證",
+          blocked_unknown: "未知／禁止寫入",
+        }
+      : {
+          write_verified: "Write verified",
+          write_rejected: "Rejected (201C)",
+          read_detected_unverified: "Detected, unverified",
+          blocked_unknown: "Unknown / blocked",
+        };
+  return (
+    <section className="capability-status-card">
+      <div>
+        <strong>
+          {locale === "zh-TW" ? "X-M5 能力矩陣" : "X-M5 capability matrix"}
+        </strong>
+        <small>
+          {capability.usbIds.join(", ")} · firmware {capability.firmware}
+        </small>
+      </div>
+      <p>
+        {locale === "zh-TW"
+          ? "下列狀態由實機寫入、讀回與還原測試記錄；未驗證欄位不會送至相機。"
+          : "Statuses come from hardware write, read-back, and restore tests; unverified fields are never sent to the camera."}
+      </p>
+      <ul>
+        {capability.properties.map((property) => (
+          <li key={property.key}>
+            <div>
+              <strong>
+                {property.labelZh} <span lang="en">{property.labelEn}</span>
+              </strong>
+              <small>
+                {property.code} · {property.verifiedValues}
+              </small>
+              {property.dependencies.map((dependency) => (
+                <small key={dependency}>{dependency}</small>
+              ))}
+              {property.notes && <small>{property.notes}</small>}
+            </div>
+            <span className={`capability-status ${property.status}`}>
+              {statusLabel[property.status]}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
 function InstalledPresetsPanel({
   devices,
   onScan,
+  onPresetsRead,
+  onSlotCleared,
   t,
 }: {
   devices: CameraDiscovery[];
   onScan: () => Promise<CameraDiscovery[]>;
+  onPresetsRead: (usbId: string, presets: InstalledPreset[]) => void;
+  onSlotCleared: (usbId: string, slot: number) => void;
   t: Translator;
 }) {
   const [presets, setPresets] = useState<InstalledPreset[]>([]);
+  const [resetCandidate, setResetCandidate] = useState<InstalledPreset>();
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const camera = devices.find(
@@ -1234,16 +2045,39 @@ function InstalledPresetsPanel({
     setBusy(true);
     setMessage("");
     try {
-      setPresets(await readXm5InstalledPresets(activeCamera.usbId));
+      const readPresets = await readXm5InstalledPresets(activeCamera.usbId);
+      setPresets(readPresets);
+      onPresetsRead(activeCamera.usbId, readPresets);
     } catch (error) {
       setMessage(String(error));
     } finally {
       setBusy(false);
     }
   }
-  function reset() {
+  function resetReadResults() {
     setPresets([]);
     setMessage(t("installedReset"));
+  }
+  async function resetSlot(preset: InstalledPreset) {
+    if (!camera) return;
+    setBusy(true);
+    setMessage(t("resetSlotWorking") + ` C${preset.slot}…`);
+    try {
+      await clearXm5CustomSlot(camera.usbId, preset.slot);
+      setPresets((current) =>
+        current.map((item) =>
+          item.slot === preset.slot ? { ...item, name: "" } : item,
+        ),
+      );
+      onSlotCleared(camera.usbId, preset.slot);
+      setMessage(`C${preset.slot} ${t("resetSlotVerified")}`);
+    } catch (error) {
+      const detail = String(error);
+      setMessage(detail.includes("exclusive access") ? t("ptpBusy") : detail);
+    } finally {
+      setBusy(false);
+      setResetCandidate(undefined);
+    }
   }
   return (
     <section className="camera-panel">
@@ -1254,7 +2088,7 @@ function InstalledPresetsPanel({
           <p>{t("installedReadHelp")}</p>
         </div>
         <div className="probe-actions">
-          <button className="secondary" disabled={busy} onClick={reset}>
+          <button className="secondary" disabled={busy} onClick={resetReadResults}>
             {t("resetInstalled")}
           </button>
           <button className="primary" disabled={busy} onClick={read}>
@@ -1274,6 +2108,13 @@ function InstalledPresetsPanel({
               <strong>C{preset.slot}</strong>
               <span>{preset.name || "—"}</span>
               <em>{preset.name ? t("installedLabel") : t("emptyLabel")}</em>
+              <button
+                className="secondary danger"
+                disabled={busy || !camera?.writeEnabled}
+                onClick={() => setResetCandidate(preset)}
+              >
+                {t("resetSlot")}
+              </button>
             </div>
           ))}
         </div>
@@ -1284,6 +2125,57 @@ function InstalledPresetsPanel({
           </div>
         )
       )}
+      {resetCandidate && (
+        <SafeDialog
+          labelledBy="reset-slot-title"
+          onClose={() => setResetCandidate(undefined)}
+          closeDisabled={busy}
+        >
+            <header>
+              <div>
+                <p className="eyebrow">{t("restorePoint")}</p>
+                <h2 id="reset-slot-title">{t("resetSlotTitle")}</h2>
+              </div>
+              <button
+                className="notice-dismiss"
+                aria-label={t("cancel")}
+                data-dialog-initial-focus
+                disabled={busy}
+                onClick={() => setResetCandidate(undefined)}
+              >
+                ×
+              </button>
+            </header>
+            <p className="dialog-intro">
+              {t("resetSlotIntro")} C{resetCandidate.slot}.
+            </p>
+            <div className="restore-point-card">
+              <strong>C{resetCandidate.slot}</strong>
+              <p>{t("resetSlotDetail")}</p>
+            </div>
+            {message && (
+              <p className="probe-message" role="status" aria-live="polite">
+                {message}
+              </p>
+            )}
+            <footer>
+              <button
+                className="secondary"
+                disabled={busy}
+                onClick={() => setResetCandidate(undefined)}
+              >
+                {t("cancel")}
+              </button>
+              <button
+                className="primary danger"
+                disabled={busy}
+                onClick={() => resetSlot(resetCandidate)}
+              >
+                {t("confirmResetSlot")}
+              </button>
+            </footer>
+        </SafeDialog>
+      )}
     </section>
   );
 }
@@ -1293,12 +2185,14 @@ function CameraPanel({
   status,
   onScan,
   refreshKey,
+  locale,
   t,
 }: {
   devices: CameraDiscovery[];
   status: string;
   onScan: () => void;
   refreshKey: number;
+  locale: Locale;
   t: Translator;
 }) {
   const [deviceInfo, setDeviceInfo] = useState<PtpDeviceInfoResult>();
@@ -1425,22 +2319,24 @@ function CameraPanel({
               {t("readSelector")}
             </button>
           </div>
-          <div className="slot-picker">
-            <span>{t("selectSlot")}</span>
-            <div>
-              {[1, 2, 3, 4].map((slot) => (
-                <button
-                  key={slot}
-                  className="secondary"
-                  disabled={busy}
-                  onClick={() => selectSlot(slot)}
-                >
-                  C{slot}
-                </button>
-              ))}
+          {camera.writeEnabled && (
+            <div className="slot-picker">
+              <span>{t("selectSlot")}</span>
+              <div>
+                {[1, 2, 3, 4].map((slot) => (
+                  <button
+                    key={slot}
+                    className="secondary"
+                    disabled={busy}
+                    onClick={() => selectSlot(slot)}
+                  >
+                    C{slot}
+                  </button>
+                ))}
+              </div>
+              <small>{t("selectSlotHelp")}</small>
             </div>
-            <small>{t("selectSlotHelp")}</small>
-          </div>
+          )}
           {message && (
             <p className="probe-message" role="status" aria-live="polite">
               {message}
@@ -1460,7 +2356,18 @@ function CameraPanel({
               <span>
                 {t("response")} <b>0x{deviceInfo.responseCode}</b>
               </span>
+              <span>
+                {t("status")} <b>{deviceInfo.capabilityState}</b>
+              </span>
+              {deviceInfo.capabilityRecordId && (
+                <span>
+                  Capability record <b>{deviceInfo.capabilityRecordId}</b>
+                </span>
+              )}
             </div>
+          )}
+          {deviceInfo && (
+            <p className="empty-slot-note">{deviceInfo.capabilityNextAction}</p>
           )}
           {slotValue && (
             <div className="probe-result">
@@ -1494,7 +2401,7 @@ function CameraPanel({
                     <div key={backup.id}>
                       <strong>C{backup.slot}</strong>
                       <span>
-                        {new Date(backup.capturedAt).toLocaleString()}
+                        {formatDateTime(locale, backup.capturedAt)}
                       </span>
                       <em>
                         {backup.propertyCount} {t("properties")}
@@ -1528,13 +2435,11 @@ function CameraPanel({
         </ol>
       </div>
       {restoreCandidate && (
-        <div className="modal-backdrop">
-          <section
-            className="camera-import-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="restore-backup-title"
-          >
+        <SafeDialog
+          labelledBy="restore-backup-title"
+          onClose={() => setRestoreCandidate(undefined)}
+          closeDisabled={busy}
+        >
             <header>
               <div>
                 <p className="eyebrow">{t("restorePoint")}</p>
@@ -1543,6 +2448,7 @@ function CameraPanel({
               <button
                 className="notice-dismiss"
                 aria-label={t("cancel")}
+                data-dialog-initial-focus
                 disabled={busy}
                 onClick={() => setRestoreCandidate(undefined)}
               >
@@ -1555,7 +2461,7 @@ function CameraPanel({
             <div className="restore-point-card">
               <strong>C{restoreCandidate.slot}</strong>
               <p>
-                {new Date(restoreCandidate.capturedAt).toLocaleString()} ·{" "}
+                {formatDateTime(locale, restoreCandidate.capturedAt)} ·{" "}
                 {restoreCandidate.propertyCount} {t("properties")}
               </p>
             </div>
@@ -1575,8 +2481,7 @@ function CameraPanel({
                 {t("restoreBackup")}
               </button>
             </footer>
-          </section>
-        </div>
+        </SafeDialog>
       )}
     </section>
   );

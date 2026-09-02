@@ -51,6 +51,11 @@ pub struct PtpDeviceInfoProbe {
     pub manufacturer: String,
     pub model: String,
     pub device_version: String,
+    pub operations_supported: Vec<u16>,
+    pub events_supported: Vec<u16>,
+    pub device_properties_supported: Vec<u16>,
+    pub capture_formats: Vec<u16>,
+    pub image_formats: Vec<u16>,
 }
 
 /// Read-only result of asking a camera to describe one PTP property. The
@@ -217,6 +222,11 @@ pub fn probe_ptp_device_info(id: UsbId) -> Result<PtpDeviceInfoProbe, TransportE
         manufacturer: device_info.manufacturer,
         model: device_info.model,
         device_version: device_info.device_version,
+        operations_supported: device_info.operations_supported,
+        events_supported: device_info.events_supported,
+        device_properties_supported: device_info.device_properties_supported,
+        capture_formats: device_info.capture_formats,
+        image_formats: device_info.image_formats,
     })
 }
 

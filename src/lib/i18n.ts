@@ -5,6 +5,181 @@ export const localeOptions: Array<{ value: Locale; label: string }> = [
   { value: "zh-TW", label: "繁體中文" },
 ];
 
+/**
+ * Canonical display names for the values currently represented in a Recipe.
+ * Keys are stable JSON/PTP-facing values; only labels are localized. The
+ * Chinese terms follow the X-M5 owner's-manual terminology where applicable.
+ */
+const optionLabels: Record<string, { en: string; "zh-TW": string }> = {
+  AUTO: { en: "Auto", "zh-TW": "自動" },
+  PROVIA: { en: "PROVIA/STANDARD", "zh-TW": "PROVIA／標準" },
+  VELVIA: { en: "Velvia/VIVID", "zh-TW": "Velvia／鮮豔" },
+  ASTIA: { en: "ASTIA/SOFT", "zh-TW": "ASTIA／柔和" },
+  CLASSIC_CHROME: { en: "CLASSIC CHROME", "zh-TW": "經典正片" },
+  REALA_ACE: { en: "REALA ACE", "zh-TW": "REALA ACE" },
+  PRO_NEG_HI: { en: "PRO Neg. Hi", "zh-TW": "PRO Neg. Hi" },
+  PRO_NEG_STD: { en: "PRO Neg. Std", "zh-TW": "PRO Neg. Std" },
+  CLASSIC_NEGATIVE: { en: "CLASSIC Neg.", "zh-TW": "經典負片" },
+  NOSTALGIC_NEGATIVE: { en: "NOSTALGIC Neg.", "zh-TW": "懷舊負片" },
+  ETERNA: { en: "ETERNA/CINEMA", "zh-TW": "ETERNA／電影" },
+  ETERNA_BLEACH_BYPASS: {
+    en: "ETERNA BLEACH BYPASS",
+    "zh-TW": "ETERNA 漂白略過",
+  },
+  ACROS: { en: "ACROS", "zh-TW": "ACROS" },
+  ACROS_YE: { en: "ACROS+Ye FILTER", "zh-TW": "ACROS＋黃濾鏡" },
+  ACROS_R: { en: "ACROS+R FILTER", "zh-TW": "ACROS＋紅濾鏡" },
+  ACROS_G: { en: "ACROS+G FILTER", "zh-TW": "ACROS＋綠濾鏡" },
+  MONOCHROME: { en: "MONOCHROME", "zh-TW": "單色" },
+  MONOCHROME_YE: {
+    en: "MONOCHROME+Ye FILTER",
+    "zh-TW": "單色＋黃濾鏡",
+  },
+  MONOCHROME_R: { en: "MONOCHROME+R FILTER", "zh-TW": "單色＋紅濾鏡" },
+  MONOCHROME_G: { en: "MONOCHROME+G FILTER", "zh-TW": "單色＋綠濾鏡" },
+  SEPIA: { en: "SEPIA", "zh-TW": "棕褐色" },
+  DR100: { en: "100%", "zh-TW": "100%" },
+  DR200: { en: "200%", "zh-TW": "200%" },
+  DR400: { en: "400%", "zh-TW": "400%" },
+  OFF: { en: "Off", "zh-TW": "關閉" },
+  WEAK: { en: "Weak", "zh-TW": "弱" },
+  MEDIUM: { en: "Medium", "zh-TW": "中" },
+  STRONG: { en: "Strong", "zh-TW": "強" },
+  SMALL: { en: "Small", "zh-TW": "小" },
+  LARGE: { en: "Large", "zh-TW": "大" },
+  WHITE_PRIORITY: { en: "White Priority", "zh-TW": "白色優先" },
+  AMBIENCE_PRIORITY: { en: "Ambience Priority", "zh-TW": "氛圍優先" },
+  CUSTOM_1: { en: "Custom 1", "zh-TW": "自訂 1" },
+  CUSTOM_2: { en: "Custom 2", "zh-TW": "自訂 2" },
+  CUSTOM_3: { en: "Custom 3", "zh-TW": "自訂 3" },
+  COLOR_TEMPERATURE: { en: "Color Temperature", "zh-TW": "色溫" },
+  DAYLIGHT: { en: "Daylight", "zh-TW": "日光" },
+  SHADE: { en: "Shade", "zh-TW": "陰影" },
+  FLUORESCENT_1: { en: "Fluorescent Light-1", "zh-TW": "螢光燈 1（日光色）" },
+  FLUORESCENT_2: { en: "Fluorescent Light-2", "zh-TW": "螢光燈 2（暖白色）" },
+  FLUORESCENT_3: { en: "Fluorescent Light-3", "zh-TW": "螢光燈 3（冷白色）" },
+  INCANDESCENT: { en: "Incandescent", "zh-TW": "白熾燈" },
+  UNDERWATER: { en: "Underwater", "zh-TW": "水下" },
+  ON: { en: "On", "zh-TW": "開啟" },
+  SRGB: { en: "sRGB", "zh-TW": "sRGB" },
+  ADOBE_RGB: { en: "Adobe RGB", "zh-TW": "Adobe RGB" },
+  L_3_2: { en: "L 3:2 (6240 × 4160)", "zh-TW": "L 3:2（6240 × 4160）" },
+  L_16_9: { en: "L 16:9 (6240 × 3512)", "zh-TW": "L 16:9（6240 × 3512）" },
+  L_1_1: { en: "L 1:1 (4160 × 4160)", "zh-TW": "L 1:1（4160 × 4160）" },
+  M_3_2: { en: "M 3:2 (4416 × 2944)", "zh-TW": "M 3:2（4416 × 2944）" },
+  M_16_9: { en: "M 16:9 (4416 × 2488)", "zh-TW": "M 16:9（4416 × 2488）" },
+  M_1_1: { en: "M 1:1 (2944 × 2944)", "zh-TW": "M 1:1（2944 × 2944）" },
+  S_3_2: { en: "S 3:2 (3120 × 2080)", "zh-TW": "S 3:2（3120 × 2080）" },
+  S_16_9: { en: "S 16:9 (3120 × 1760)", "zh-TW": "S 16:9（3120 × 1760）" },
+  S_1_1: { en: "S 1:1 (2080 × 2080)", "zh-TW": "S 1:1（2080 × 2080）" },
+  P_3_2_1_25X_CROP: { en: "P 3:2 (4992 × 3328, 1.25× crop)", "zh-TW": "P 3:2（4992 × 3328，1.25× 裁切）" },
+  P_16_9_1_25X_CROP: { en: "P 16:9 (4992 × 2808, 1.25× crop)", "zh-TW": "P 16:9（4992 × 2808，1.25× 裁切）" },
+  P_1_1_1_25X_CROP: { en: "P 1:1 (3328 × 3328, 1.25× crop)", "zh-TW": "P 1:1（3328 × 3328，1.25× 裁切）" },
+  FINE: { en: "Fine", "zh-TW": "精細" },
+  NORMAL: { en: "Normal", "zh-TW": "標準" },
+  FINE_PLUS_RAW: { en: "Fine+RAW", "zh-TW": "精細＋RAW" },
+  NORMAL_PLUS_RAW: { en: "Normal+RAW", "zh-TW": "標準＋RAW" },
+  RAW: { en: "RAW", "zh-TW": "RAW" },
+  UNCOMPRESSED: { en: "Uncompressed", "zh-TW": "未壓縮" },
+  LOSSLESS_COMPRESSED: { en: "Lossless Compressed", "zh-TW": "無損壓縮" },
+  COMPRESSED: { en: "Compressed", "zh-TW": "壓縮" },
+  JPEG: { en: "JPEG", "zh-TW": "JPEG" },
+  HEIF: { en: "HEIF", "zh-TW": "HEIF" },
+  AUTO_1: { en: "Auto 1", "zh-TW": "自動 1" },
+  AUTO_2: { en: "Auto 2", "zh-TW": "自動 2" },
+  AUTO_3: { en: "Auto 3", "zh-TW": "自動 3" },
+  MULTI: { en: "Multi", "zh-TW": "多重" },
+  SPOT: { en: "Spot", "zh-TW": "點測光" },
+  AVERAGE: { en: "Average", "zh-TW": "平均" },
+  CENTER_WEIGHTED: { en: "Center-Weighted", "zh-TW": "中央重點" },
+  SINGLE_AF: { en: "Single AF", "zh-TW": "單次 AF" },
+  CONTINUOUS_AF: { en: "Continuous AF", "zh-TW": "連續 AF" },
+  MANUAL_FOCUS: { en: "Manual Focus", "zh-TW": "手動對焦" },
+  SINGLE_POINT: { en: "Single Point", "zh-TW": "單點" },
+  ZONE: { en: "Zone", "zh-TW": "區域" },
+  WIDE_TRACKING: { en: "Wide/Tracking", "zh-TW": "廣域／追蹤" },
+  ALL: { en: "All", "zh-TW": "全部" },
+  SINGLE: { en: "Single", "zh-TW": "單張" },
+  CONTINUOUS_LOW: { en: "Continuous Low", "zh-TW": "連拍低速" },
+  CONTINUOUS_HIGH: { en: "Continuous High", "zh-TW": "連拍高速" },
+  SELF_TIMER: { en: "Self-Timer", "zh-TW": "自拍" },
+  BRACKETING: { en: "Bracketing", "zh-TW": "包圍" },
+  MECHANICAL: { en: "Mechanical", "zh-TW": "機械快門" },
+  ELECTRONIC: { en: "Electronic", "zh-TW": "電子快門" },
+  ELECTRONIC_FRONT_CURTAIN: {
+    en: "Electronic Front Curtain",
+    "zh-TW": "電子前簾快門",
+  },
+  MECHANICAL_PLUS_ELECTRONIC: {
+    en: "Mechanical + Electronic",
+    "zh-TW": "機械＋電子快門",
+  },
+  E_FRONT_PLUS_MECHANICAL: {
+    en: "Electronic Front Curtain + Mechanical",
+    "zh-TW": "電子前簾＋機械快門",
+  },
+  E_FRONT_PLUS_MECHANICAL_PLUS_ELECTRONIC: {
+    en: "Electronic Front Curtain + Mechanical + Electronic",
+    "zh-TW": "電子前簾＋機械＋電子快門",
+  },
+};
+
+for (const iso of [
+  "ISO_80", "ISO_100", "ISO_125", "ISO_160", "ISO_200", "ISO_250",
+  "ISO_320", "ISO_400", "ISO_500", "ISO_640", "ISO_800", "ISO_1000",
+  "ISO_1250", "ISO_1600", "ISO_2000", "ISO_2500", "ISO_3200", "ISO_4000",
+  "ISO_5000", "ISO_6400", "ISO_8000", "ISO_10000", "ISO_12800", "ISO_25600",
+  "ISO_51200",
+]) {
+  const value = iso.replace("_", " ");
+  optionLabels[iso] = { en: value, "zh-TW": value };
+}
+
+export function formatOption(locale: Locale, value: string): string {
+  return optionLabels[value]?.[locale] ?? value.replaceAll("_", " ");
+}
+
+function normaliseOptionText(value: string): string {
+  return value
+    .trim()
+    .toUpperCase()
+    .replaceAll(/[^\p{L}\p{N}]+/gu, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+const optionAliases: Record<string, string> = {
+  CLASSIC_NEG: "CLASSIC_NEGATIVE",
+  NOSTALGIC_NEG: "NOSTALGIC_NEGATIVE",
+  ETERNA_CINEMA: "ETERNA",
+  ACROS_YE_FILTER: "ACROS_YE",
+  ACROS_R_FILTER: "ACROS_R",
+  ACROS_G_FILTER: "ACROS_G",
+  MONOCHROME_YE_FILTER: "MONOCHROME_YE",
+  MONOCHROME_R_FILTER: "MONOCHROME_R",
+  MONOCHROME_G_FILTER: "MONOCHROME_G",
+  FINE_RAW: "FINE_PLUS_RAW",
+  NORMAL_RAW: "NORMAL_PLUS_RAW",
+  ADOBE_RGB: "ADOBE_RGB",
+  AUTO1: "AUTO_1",
+  AUTO2: "AUTO_2",
+  AUTO3: "AUTO_3",
+};
+
+/** Accept canonical IDs plus the English and Traditional-Chinese labels in pasted Recipes. */
+export function optionValueFromText(value: string): string {
+  const normalized = normaliseOptionText(value);
+  if (optionLabels[normalized]) return normalized;
+  if (optionAliases[normalized]) return optionAliases[normalized];
+  for (const [internal, labels] of Object.entries(optionLabels)) {
+    if (
+      normaliseOptionText(labels.en) === normalized ||
+      normaliseOptionText(labels["zh-TW"]) === normalized
+    )
+      return internal;
+  }
+  return normalized;
+}
+
 const copy = {
   en: {
     library: "Recipe Library",
@@ -29,6 +204,13 @@ const copy = {
     restorePoint: "Restore point",
     restorePointDetail:
       "The app captures the current custom-setting name and every Recipe field it will change, saves them locally, then verifies every written field. If verification fails, it restores the captured values.",
+    rawSnapshot: "Raw C-slot snapshot",
+    rawSnapshotDetail:
+      "Optionally preserve every readable X-M5 custom-slot PTP value with this Recipe. The app temporarily selects the target C slot, then verifies restoration of the previously active slot. These raw bytes are never written back automatically.",
+    captureRawSnapshot: "Capture raw snapshot",
+    rawSnapshotCaptured: "Read-only raw snapshot saved",
+    rawSnapshotProperties: "readable properties",
+    rawSnapshotUnavailable: "unreadable properties",
     confirmOverwrite: "Create restore point and overwrite",
     cancel: "Cancel",
     importWorking: "Creating restore point and importing to",
@@ -74,18 +256,50 @@ const copy = {
     resetInstalled: "Reset read results",
     installedReset:
       "Installed-preset results cleared locally. No camera setting was changed.",
+    resetSlot: "Reset slot",
+    resetSlotTitle: "Clear camera custom slot",
+    resetSlotIntro:
+      "This clears the preset name and writes neutral values for every currently verified Recipe property to",
+    resetSlotDetail:
+      "A durable local restore point is created first. This is not a full camera factory reset and does not change unverified camera settings.",
+    confirmResetSlot: "Create restore point and clear slot",
+    resetSlotWorking: "Creating restore point and clearing",
+    resetSlotVerified: "was cleared and verified by read-back.",
     search: "Search recipes",
+    noRecipeResults: "No Recipes match this search.",
+    clearSearch: "Clear search",
+    filterRecipes: "Filters",
+    clearFilters: "Clear",
+    filterFilmSimulation: "Film Simulation",
+    allFilmSimulations: "All film simulations",
+    filterTag: "Tag",
+    allTags: "All tags",
+    filterFavorites: "Favorites",
+    allRecipes: "All recipes",
+    favoritesOnly: "Favorites only",
+    filterAssignment: "C1–C4 assignment",
+    allAssignments: "All assignments",
+    assignedToSlot: "Assigned to C1–C4",
+    notAssignedToSlot: "Not assigned",
+    filterCameraCompatibility: "Camera compatibility",
+    allCameras: "All cameras",
+    recipes: "Recipes",
     newRecipe: "+ New recipe",
     untaged: "Untagged",
     tags: "Tags",
     compatible: "Fujifilm recipe",
     delete: "Delete",
     exportJson: "Export JSON",
+    exportFp1: "Export FP1",
+    exportFp2: "Export FP2",
+    exportFp3: "Export FP3",
     writeLocked: "Write to camera · locked",
     writeLockedTitle:
       "Unlocks only after a backup and model-specific read-back verification.",
     scanUsb: "Scan USB",
     noCamera: "No camera scanned yet",
+    cameraConnected: "Fujifilm camera connected",
+    cameraDisconnected: "No Fujifilm camera connected",
     scanUnavailable:
       "USB scan is unavailable. Open this screen in the desktop app.",
     readOnlyDetected: "Fujifilm device detected — read-only mode",
@@ -138,6 +352,8 @@ const copy = {
       "Backup is waived, but property encodings and write/read-back verification are not complete.",
     writeValueUnsupported:
       "Camera import is blocked until this X-M5 write path supports the selected value for:",
+    cropImageSizeLocked:
+      "P image sizes are available only with Sports Finder or 1.25× high-speed burst. That prerequisite is not a C-slot property, so the selection is retained for Recipe compatibility but cannot be written to the camera.",
     selectSlot: "Select camera slot",
     selectSlotHelp:
       "Changes only the active custom-slot selector, then reads it back. No Recipe parameter is written.",
@@ -155,12 +371,22 @@ const copy = {
     importHelp:
       "Paste recipe settings or portable JSON. Import only creates a local library item; it does not change your camera.",
     sourceUrl: "Original source URL",
+    sourceUrlInvalid: "Use a complete http:// or https:// URL to open the original page.",
     sourceAuthor: "Original author",
     optional: "Optional",
     openSource: "Open original page",
     sourceNote:
       "The URL is stored as attribution only. This app does not fetch or copy a Recipe from that website.",
     chooseFile: "Choose .frecipe / JSON",
+    importImageRecipe: "Create Recipe from JPEG / RAF",
+    imageImportDesktopOnly: "Image metadata import is available in the desktop app only.",
+    stageRafPreview: "Check RAF preview workflow",
+    rafPreviewDesktopOnly: "RAF preview preflight is available in the desktop app only.",
+    rafPreviewStaged: "RAF preview preflight completed; no camera was opened.",
+    rafPreviewStatus: "RAF preview preflight",
+    imageImportSummary: "JPEG / RAF metadata import",
+    imageFieldRecognized: "Recognized",
+    imageFieldUnavailable: "Unavailable",
     parseSave: "Parse & save locally",
     description: "Describe this look",
     noChange: "No camera changes",
@@ -169,10 +395,24 @@ const copy = {
     imageQualitySettings: "Image Quality Settings",
     imageQualitySettingsHelp:
       "All official options are stored with the Recipe. Camera import sends only X-M5 values with verified PTP write and read-back support.",
+    creativeRecipeSettings: "Creative Recipe",
+    creativeRecipeSettingsHelp:
+      "Film rendering choices. X-M5 camera import sends only fields with verified PTP write and read-back support.",
+    cameraCaptureSettings: "Camera Capture Settings",
+    cameraCaptureSettingsHelp:
+      "Capture-format and body-behaviour context stored with this Recipe. A visible option is not necessarily camera-writable.",
+    settingDependencyTitle: "Camera setting dependency",
+    heifDependency:
+      "On X-M5, HEIF disables Clarity and uses sRGB. The stored values are preserved, but the camera may override them while HEIF is selected.",
+    dRangePriorityDependency:
+      "When D Range Priority is not Off, X-M5 adjusts Dynamic Range and Tone Curve automatically. Turn it Off for manual DR, Highlight, and Shadow control.",
+    dynamicRangeIsoDependency:
+      "X-M5 requires ISO 320 or higher for 200% Dynamic Range and ISO 640 or higher for 400%. The camera may adjust the setting if the selected ISO is lower.",
     shootingSettings: "Shooting Settings",
     shootingSettingsHelp:
       "Stored with this Recipe and exported with it. These fields are not yet sent to the camera.",
     isoSensitivity: "ISO Sensitivity",
+    isoAutoMaximum: "Auto ISO Maximum",
     exposureCompensation: "Exposure Compensation",
     meteringMode: "Photometry",
     focusMode: "Focus Mode",
@@ -187,6 +427,11 @@ const copy = {
     grainSize: "Grain Effect Size",
     colorChrome: "Color Chrome Effect",
     colorChromeBlue: "Color Chrome FX Blue",
+    smoothSkinEffect: "Smooth Skin Effect",
+    monochromaticWarmCool: "Monochromatic Color Warm/Cool",
+    monochromaticMagentaGreen: "Monochromatic Color Green/Magenta",
+    monochromaticWriteLocked:
+      "Saved for interchange only. X-M5 firmware 1.30 rejected every tested write, so camera import remains locked.",
     dRangePriority: "D Range Priority",
     portraitEnhancer: "Portrait Enhancer LV",
     longExposureNr: "Long Exposure NR",
@@ -225,6 +470,13 @@ const copy = {
     restorePoint: "還原點",
     restorePointDetail:
       "程式會先讀取目前的自訂檔名稱與所有即將變更的 Recipe 欄位並保存到本機，再逐欄驗證寫入結果；驗證失敗時會還原捕捉到的數值。",
+    rawSnapshot: "原始 C 槽快照 Raw C-slot Snapshot",
+    rawSnapshotDetail:
+      "可選擇將此目標 C 槽所有可讀取的 X-M5 PTP 數值隨 Recipe 保存。App 會暫時選取該 C 槽，並驗證還原原本作用中的槽位；原始位元組絕不會被自動寫回相機。",
+    captureRawSnapshot: "保存原始快照 Capture Raw Snapshot",
+    rawSnapshotCaptured: "已保存唯讀原始快照",
+    rawSnapshotProperties: "個可讀取欄位",
+    rawSnapshotUnavailable: "個無法讀取欄位",
     confirmOverwrite: "建立還原點並覆蓋",
     cancel: "取消",
     importWorking: "正在建立還原點並匯入至",
@@ -269,17 +521,49 @@ const copy = {
       "讀取目前 C1–C4 的自訂檔名稱；此操作不會寫入或變更相機。",
     resetInstalled: "重設讀取結果",
     installedReset: "已清除 App 的讀取結果，未變更相機設定。",
+    resetSlot: "重設槽位",
+    resetSlotTitle: "清空相機自訂槽位 Clear Camera Custom Slot",
+    resetSlotIntro:
+      "這會清除自訂檔名稱，並將目前已驗證的所有 Recipe 欄位寫入中性值至",
+    resetSlotDetail:
+      "程式會先建立可還原的本機還原點。這不是相機完整初始化，也不會變更尚未驗證的相機設定。",
+    confirmResetSlot: "建立還原點並清空槽位",
+    resetSlotWorking: "正在建立還原點並清空",
+    resetSlotVerified: "已清空並通過讀回驗證。",
     search: "搜尋 Recipe",
+    noRecipeResults: "找不到符合這個搜尋條件的 Recipe。",
+    clearSearch: "清除搜尋",
+    filterRecipes: "篩選",
+    clearFilters: "清除",
+    filterFilmSimulation: "膠片模擬",
+    allFilmSimulations: "全部膠片模擬",
+    filterTag: "標籤",
+    allTags: "全部標籤",
+    filterFavorites: "收藏",
+    allRecipes: "全部 Recipe",
+    favoritesOnly: "僅顯示收藏",
+    filterAssignment: "C1–C4 指派狀態",
+    allAssignments: "全部指派狀態",
+    assignedToSlot: "已指派至 C1–C4",
+    notAssignedToSlot: "尚未指派",
+    filterCameraCompatibility: "相機相容性",
+    allCameras: "全部相機",
+    recipes: "組 Recipe",
     newRecipe: "+ 新增 Recipe",
     untaged: "未分類",
     tags: "標籤",
     compatible: "Fujifilm Recipe",
     delete: "刪除",
     exportJson: "匯出 JSON",
+    exportFp1: "匯出 FP1",
+    exportFp2: "匯出 FP2",
+    exportFp3: "匯出 FP3",
     writeLocked: "寫入相機 · 已鎖定",
     writeLockedTitle: "完成備份與該機型讀回驗證後才會開放。",
     scanUsb: "掃描 USB",
     noCamera: "尚未掃描相機",
+    cameraConnected: "已連接 Fujifilm 相機",
+    cameraDisconnected: "未連接 Fujifilm 相機",
     scanUnavailable: "USB 掃描無法使用，請在桌面版程式中開啟此頁面。",
     readOnlyDetected: "已偵測到 Fujifilm 裝置 · 唯讀模式",
     noFuji: "未偵測到 Fujifilm 相機",
@@ -326,6 +610,8 @@ const copy = {
     writeStillLocked: "備份已略過，但屬性編碼與寫後讀回驗證尚未完成。",
     writeValueUnsupported:
       "目前選擇的值尚未完成 X-M5 寫入驗證，因此已阻止匯入：",
+    cropImageSizeLocked:
+      "P 尺寸僅在 Sports Finder 或 1.25× 高速連拍時可用。此前置模式不是 C 槽屬性；程式會保留此 Recipe 相容性資料，但不能寫入相機。",
     selectSlot: "選取相機槽位",
     selectSlotHelp:
       "只會變更目前自訂槽位選擇器，接著立即讀回；不會寫入 Recipe 參數。",
@@ -340,11 +626,21 @@ const copy = {
     importHelp:
       "貼上 Recipe 設定或可攜 JSON；匯入只會建立本機資料庫項目，不會變更相機。",
     sourceUrl: "原始來源網址",
+    sourceUrlInvalid: "請使用完整的 http:// 或 https:// 網址，才能開啟原始頁面。",
     sourceAuthor: "原始作者",
     optional: "選填",
     openSource: "開啟原始頁面",
     sourceNote: "網址只會作為出處紀錄；App 不會從該網站擷取或複製 Recipe。",
     chooseFile: "選擇 .frecipe / JSON",
+    importImageRecipe: "從 JPEG／RAF 建立 Recipe",
+    imageImportDesktopOnly: "影像 metadata 匯入只能在桌面版程式中使用。",
+    stageRafPreview: "檢查 RAF 預覽流程",
+    rafPreviewDesktopOnly: "RAF 預覽前置檢查只能在桌面版程式中使用。",
+    rafPreviewStaged: "RAF 預覽前置檢查已完成；未開啟相機。",
+    rafPreviewStatus: "RAF 預覽前置檢查",
+    imageImportSummary: "JPEG／RAF metadata 匯入結果",
+    imageFieldRecognized: "已辨識",
+    imageFieldUnavailable: "無法判定",
     parseSave: "解析並儲存到本機",
     description: "描述這組風格",
     noChange: "未變更相機",
@@ -353,10 +649,24 @@ const copy = {
     imageQualitySettings: "影像品質設定 Image Quality Settings",
     imageQualitySettingsHelp:
       "所有富士官方選項皆會隨 Recipe 儲存；匯入相機時只會送出已完成 X-M5 PTP 寫入與讀回驗證的值。",
+    creativeRecipeSettings: "創意 Recipe 設定 Creative Recipe",
+    creativeRecipeSettingsHelp:
+      "影像風格設定。匯入 X-M5 時，只會送出已完成 PTP 寫入與讀回驗證的欄位。",
+    cameraCaptureSettings: "相機拍攝設定 Camera Capture Settings",
+    cameraCaptureSettingsHelp:
+      "隨 Recipe 儲存的畫質格式與機身行為設定。顯示的選項不代表一定能寫入相機。",
+    settingDependencyTitle: "相機設定相依性 Camera Setting Dependency",
+    heifDependency:
+      "X-M5 使用 HEIF 時會停用清晰度並將色彩空間設為 sRGB。App 仍會保存原值，但相機在 HEIF 模式下可能覆蓋這些值。",
+    dRangePriorityDependency:
+      "D 範圍優先不是「關閉」時，X-M5 會自動調整動態範圍與色調曲線；若要手動設定 DR、亮部與陰影，請選擇「關閉」。",
+    dynamicRangeIsoDependency:
+      "X-M5 的 200% 動態範圍需要 ISO 320 以上，400% 需要 ISO 640 以上；選擇較低 ISO 時，相機可能會調整設定。",
     shootingSettings: "拍攝設定 Shooting Settings",
     shootingSettingsHelp:
       "會隨 Recipe 儲存與匯出；這些欄位尚未完成相機寫入驗證，因此不會送至相機。",
     isoSensitivity: "ISO 感光度 ISO Sensitivity",
+    isoAutoMaximum: "自動 ISO 上限 Auto ISO Maximum",
     exposureCompensation: "曝光補償 Exposure Compensation",
     meteringMode: "測光 Photometry",
     focusMode: "對焦模式 Focus Mode",
@@ -371,6 +681,12 @@ const copy = {
     grainSize: "顆粒效果大小 Grain Effect Size",
     colorChrome: "彩色效果 Color Chrome Effect",
     colorChromeBlue: "色彩漸變特效藍色 Color Chrome FX Blue",
+    smoothSkinEffect: "平滑膚色效果 Smooth Skin Effect",
+    monochromaticWarmCool: "黑白暖冷色調 Monochromatic Color Warm/Cool",
+    monochromaticMagentaGreen:
+      "黑白洋紅／綠色調 Monochromatic Color Green/Magenta",
+    monochromaticWriteLocked:
+      "僅供 Recipe／FP 互通保存。X-M5 firmware 1.30 拒絕所有已測寫入，因此匯入相機時維持鎖定。",
     dRangePriority: "D 範圍優先 D Range Priority",
     portraitEnhancer: "人像增強 Portrait Enhancer LV",
     longExposureNr: "長時間曝光降噪 Long Exposure NR",

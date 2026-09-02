@@ -6,5 +6,7 @@ license.workspace = true
 
 [dependencies]
 camera-fujifilm = { path = "../../crates/camera-fujifilm" }
+camera-xm5 = { path = "../../crates/camera-xm5" }
+camera-core = { path = "../../crates/camera-core" }
 usb-transport = { path = "../../crates/usb-transport" }
 ptp-core = { path = "../../crates/ptp-core" }

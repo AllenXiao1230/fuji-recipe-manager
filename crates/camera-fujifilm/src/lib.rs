@@ -176,6 +176,93 @@ pub struct FujiRecognition {
     pub recipe_access: RecipeAccess,
 }
 
+/// The decision produced after pairing a USB ID with PTP DeviceInfo model and
+/// firmware. Recognition is not enough: this result is the sole model-level
+/// gate used by write entry points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityRecordState {
+    /// USB ID, PTP model and firmware exactly match a checked-in record.
+    ExactExperimental,
+    /// The body matches a known record but its firmware does not.
+    FirmwareProbeOnly,
+    /// The USB ID and firmware do not identify a checked-in model record.
+    ProbeOnly,
+    /// This is not a Fujifilm USB device.
+    NotFujifilm,
+}
+
+impl CapabilityRecordState {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ExactExperimental => "Exact experimental capability record",
+            Self::FirmwareProbeOnly => "Known model, unverified firmware (probe only)",
+            Self::ProbeOnly => "No exact capability record (probe only)",
+            Self::NotFujifilm => "Not a Fujifilm camera",
+        }
+    }
+
+    pub const fn next_action(self) -> &'static str {
+        match self {
+            Self::ExactExperimental => {
+                "A disposable C slot may use the backup, write, read-back, restore workflow."
+            }
+            Self::FirmwareProbeOnly | Self::ProbeOnly => {
+                "Run read-only scanning first; add a model and firmware capability record before any write test."
+            }
+            Self::NotFujifilm => "No Fujifilm PTP workflow is available.",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapabilityRecordResolution {
+    pub state: CapabilityRecordState,
+    pub record_id: Option<&'static str>,
+}
+
+/// Resolve a physical Fujifilm identity to a checked-in capability record.
+///
+/// This is intentionally conservative: a matching USB product ID without the
+/// matching PTP model and firmware remains probe-only. Additional per-model
+/// crates can register records here without changing USB transport code.
+pub fn resolve_capability_record(
+    id: UsbId,
+    device_model: &str,
+    device_firmware: &str,
+) -> CapabilityRecordResolution {
+    if !is_fujifilm(id) {
+        return CapabilityRecordResolution {
+            state: CapabilityRecordState::NotFujifilm,
+            record_id: None,
+        };
+    }
+    let record = camera_xm5::capability_record();
+    let same_usb_id = record
+        .usb_ids
+        .iter()
+        .any(|usb_id| usb_id == &id.to_string());
+    let normalised_model = device_model
+        .to_ascii_uppercase()
+        .replace("FUJIFILM", "")
+        .trim()
+        .to_string();
+    let same_model = normalised_model == record.model.to_ascii_uppercase();
+    if same_usb_id && same_model {
+        return CapabilityRecordResolution {
+            state: if device_firmware.trim() == record.firmware {
+                CapabilityRecordState::ExactExperimental
+            } else {
+                CapabilityRecordState::FirmwareProbeOnly
+            },
+            record_id: Some(record.record_id.as_str()),
+        };
+    }
+    CapabilityRecordResolution {
+        state: CapabilityRecordState::ProbeOnly,
+        record_id: None,
+    }
+}
+
 pub const fn is_fujifilm(id: UsbId) -> bool {
     id.vendor_id == FUJIFILM_VENDOR_ID
 }
@@ -241,5 +328,30 @@ mod tests {
     #[test]
     fn ignores_other_vendors() {
         assert_eq!(recognise(UsbId::new(0x05ac, 1), Some("X-T5")), None);
+    }
+
+    #[test]
+    fn capability_record_requires_usb_model_and_firmware_match() {
+        let exact = resolve_capability_record(
+            UsbId::new(FUJIFILM_VENDOR_ID, 0x030C),
+            "FUJIFILM X-M5",
+            "1.30",
+        );
+        assert_eq!(exact.state, CapabilityRecordState::ExactExperimental);
+        assert_eq!(exact.record_id, Some("fujifilm-xm5-04cb-030c-fw-1.30"));
+
+        let firmware_mismatch =
+            resolve_capability_record(UsbId::new(FUJIFILM_VENDOR_ID, 0x030C), "X-M5", "1.31");
+        assert_eq!(
+            firmware_mismatch.state,
+            CapabilityRecordState::FirmwareProbeOnly
+        );
+
+        let unlisted = resolve_capability_record(
+            UsbId::new(FUJIFILM_VENDOR_ID, 0x1234),
+            "FUJIFILM X-T5",
+            "2.00",
+        );
+        assert_eq!(unlisted.state, CapabilityRecordState::ProbeOnly);
     }
 }

@@ -1,0 +1,291 @@
+{
+  "schemaVersion": 1,
+  "recordId": "fujifilm-xm5-04cb-030c-fw-1.30",
+  "manufacturer": "FUJIFILM",
+  "model": "X-M5",
+  "firmware": "1.30",
+  "usbIds": ["04CB:030C"],
+  "customSlots": ["C1", "C2", "C3", "C4"],
+  "validation": {
+    "method": "physical USB/PTP write, read-back, and captured-value restore",
+    "testedOn": "2026-09-02",
+    "scope": "A disposable C slot; the previously active slot and every captured property were restored after each test."
+  },
+  "properties": [
+    {
+      "key": "presetName",
+      "code": "D18D",
+      "scope": "custom_slot",
+      "labelZh": "自訂檔名稱",
+      "labelEn": "Custom Preset Name",
+      "status": "write_verified",
+      "verifiedValues": "Printable ASCII, up to 31 UTF-16 code units",
+      "dependencies": [],
+      "notes": "Unicode names remain blocked until separately verified."
+    },
+    {
+      "key": "filmSimulation",
+      "code": "D192",
+      "scope": "custom_slot",
+      "labelZh": "軟片模擬",
+      "labelEn": "Film Simulation",
+      "status": "write_verified",
+      "verifiedValues": "All camera-supported non-Auto Film Simulations: PROVIA, Velvia, ASTIA, PRO Neg. Hi/Std, Monochrome (+Ye/+R/+G), Sepia, Classic Chrome, ACROS (+Ye/+R/+G), ETERNA, Classic Negative, ETERNA Bleach Bypass, Nostalgic Negative, REALA ACE",
+      "dependencies": [],
+      "notes": "The original eight and the remaining twelve non-Auto values passed independent C4 write/read-back/captured-value restore tests on 2026-09-02. Film Simulation Auto remains locked because Custom Preset semantics were not tested."
+    },
+    {
+      "key": "dynamicRange",
+      "code": "D190",
+      "scope": "custom_slot",
+      "labelZh": "動態範圍",
+      "labelEn": "Dynamic Range",
+      "status": "write_verified",
+      "verifiedValues": "Auto, DR100, DR200, DR400",
+      "dependencies": [],
+      "notes": "Auto (FFFF) passed C4 write/read-back/captured-value restore on 2026-09-02. Camera ISO constraints still apply to fixed DR values."
+    },
+    {
+      "key": "grain",
+      "code": "D195",
+      "scope": "custom_slot",
+      "labelZh": "顆粒效果",
+      "labelEn": "Grain Effect",
+      "status": "write_verified",
+      "verifiedValues": "Off/Weak/Strong × Small/Large",
+      "dependencies": [],
+      "notes": "Off retains grain size; restore establishes the retained size before writing Off."
+    },
+    {
+      "key": "colorChromeEffect",
+      "code": "D196",
+      "scope": "custom_slot",
+      "labelZh": "彩色效果",
+      "labelEn": "Color Chrome Effect",
+      "status": "write_verified",
+      "verifiedValues": "Off, Weak, Strong",
+      "dependencies": [],
+      "notes": ""
+    },
+    {
+      "key": "colorChromeFxBlue",
+      "code": "D197",
+      "scope": "custom_slot",
+      "labelZh": "色彩漸變特效藍色",
+      "labelEn": "Color Chrome FX Blue",
+      "status": "write_verified",
+      "verifiedValues": "Off, Weak, Strong",
+      "dependencies": [],
+      "notes": ""
+    },
+    {
+      "key": "smoothSkinEffect",
+      "code": "D198",
+      "scope": "custom_slot",
+      "labelZh": "平滑膚色效果",
+      "labelEn": "Smooth Skin Effect",
+      "status": "write_verified",
+      "verifiedValues": "Off, Weak, Strong",
+      "dependencies": [],
+      "notes": ""
+    },
+    {
+      "key": "whiteBalance",
+      "code": "D199",
+      "scope": "custom_slot",
+      "labelZh": "白平衡",
+      "labelEn": "White Balance",
+      "status": "write_verified",
+      "verifiedValues": "White Priority, Auto, Ambience Priority, Daylight, Shade, Fluorescent 1/2/3, Incandescent, Underwater, Color Temperature",
+      "dependencies": ["Color Temperature must be written after White Balance is set to Color Temperature."],
+      "notes": "White Priority (8020) and Ambience Priority (8021) passed C4 write/read-back/captured-value restore on 2026-09-02. Custom 1–3 remain locked because their C-slot mapping and recovery semantics are unverified."
+    },
+    {
+      "key": "whiteBalanceShiftRed",
+      "code": "D19A",
+      "scope": "custom_slot",
+      "labelZh": "白平衡偏移 R",
+      "labelEn": "White Balance Shift R",
+      "status": "write_verified",
+      "verifiedValues": "-9 to +9",
+      "dependencies": [],
+      "notes": ""
+    },
+    {
+      "key": "whiteBalanceShiftBlue",
+      "code": "D19B",
+      "scope": "custom_slot",
+      "labelZh": "白平衡偏移 B",
+      "labelEn": "White Balance Shift B",
+      "status": "write_verified",
+      "verifiedValues": "-9 to +9",
+      "dependencies": [],
+      "notes": ""
+    },
+    {
+      "key": "colorTemperature",
+      "code": "D19C",
+      "scope": "custom_slot",
+      "labelZh": "色溫",
+      "labelEn": "Color Temperature",
+      "status": "write_verified",
+      "verifiedValues": "2500 K, 6500 K, 10000 K; encoder permits 2500–10000 K in 10 K steps",
+      "dependencies": ["White Balance must be Color Temperature (D199 = 8007) before this property is written."],
+      "notes": "The app does not write this field under any other White Balance mode."
+    },
+    {
+      "key": "highlightTone",
+      "code": "D19D",
+      "scope": "custom_slot",
+      "labelZh": "亮部色調",
+      "labelEn": "Highlight Tone",
+      "status": "write_verified",
+      "verifiedValues": "-2.0 to +4.0 in 0.5 steps",
+      "dependencies": [],
+      "notes": "Values below -2.0 were rejected by the camera."
+    },
+    {
+      "key": "shadowTone",
+      "code": "D19E",
+      "scope": "custom_slot",
+      "labelZh": "陰影色調",
+      "labelEn": "Shadow Tone",
+      "status": "write_verified",
+      "verifiedValues": "-2.0 to +4.0 in 0.5 steps",
+      "dependencies": [],
+      "notes": "Values below -2.0 were rejected by the camera."
+    },
+    {
+      "key": "color",
+      "code": "D19F",
+      "scope": "custom_slot",
+      "labelZh": "色彩",
+      "labelEn": "Color",
+      "status": "write_verified",
+      "verifiedValues": "-4 to +4",
+      "dependencies": [],
+      "notes": ""
+    },
+    {
+      "key": "sharpness",
+      "code": "D1A0",
+      "scope": "custom_slot",
+      "labelZh": "銳利度",
+      "labelEn": "Sharpness",
+      "status": "write_verified",
+      "verifiedValues": "-4 to +4",
+      "dependencies": [],
+      "notes": ""
+    },
+    {
+      "key": "highIsoNoiseReduction",
+      "code": "D1A1",
+      "scope": "custom_slot",
+      "labelZh": "高 ISO 降噪",
+      "labelEn": "High ISO Noise Reduction",
+      "status": "write_verified",
+      "verifiedValues": "-4 to +4",
+      "dependencies": [],
+      "notes": ""
+    },
+    {
+      "key": "clarity",
+      "code": "D1A2",
+      "scope": "custom_slot",
+      "labelZh": "清晰度",
+      "labelEn": "Clarity",
+      "status": "write_verified",
+      "verifiedValues": "-5 to +5",
+      "dependencies": [],
+      "notes": ""
+    },
+    {
+      "key": "colorSpace",
+      "code": "D1A4",
+      "scope": "custom_slot",
+      "labelZh": "色彩空間",
+      "labelEn": "Color Space",
+      "status": "write_verified",
+      "verifiedValues": "sRGB, Adobe RGB",
+      "dependencies": ["HEIF can cause the camera to force sRGB."],
+      "notes": ""
+    },
+    {
+      "key": "imageSize",
+      "code": "D18E",
+      "scope": "custom_slot",
+      "labelZh": "影像尺寸",
+      "labelEn": "Image Size",
+      "status": "write_verified",
+      "verifiedValues": "S 3:2 (01 00), S 16:9 (02 00), S 1:1 (03 00), M 3:2 (04 00), M 16:9 (05 00), M 1:1 (06 00), L 3:2 (07 00), L 16:9 (08 00), L 1:1 (09 00)",
+      "dependencies": [],
+      "notes": "S 3:2 (01 00), S 16:9 (02 00), S 1:1 (03 00), M 3:2 (04 00), M 16:9 (05 00), M 1:1 (06 00), L 16:9 (08 00), and L 1:1 (09 00) each passed write/read-back/captured-value restore on C4 on 2026-09-02. The P-size 1.25× crop options are mode-dependent (Sports Finder or high-speed burst) and remain blocked until that prerequisite can be represented and separately verified."
+    },
+    {
+      "key": "imageQuality",
+      "code": "D18F",
+      "scope": "custom_slot",
+      "labelZh": "影像品質",
+      "labelEn": "Image Quality",
+      "status": "write_verified",
+      "verifiedValues": "RAW (01 00), FINE (02 00), NORMAL (03 00), FINE+RAW (04 00), NORMAL+RAW (05 00)",
+      "dependencies": [],
+      "notes": "RAW (01 00), NORMAL (03 00), FINE+RAW (04 00), and NORMAL+RAW (05 00) passed write/read-back/captured-value restore on C4 on 2026-09-02."
+    },
+    {
+      "key": "longExposureNoiseReduction",
+      "code": "D1A3",
+      "scope": "custom_slot",
+      "labelZh": "長時間曝光降噪",
+      "labelEn": "Long Exposure NR",
+      "status": "write_rejected",
+      "verifiedValues": "None",
+      "dependencies": [],
+      "notes": "Off and On were both rejected with PTP response 201C in the 2026-09-02 retest; a follow-up read confirmed the captured value was unchanged. This property remains locked."
+    },
+    {
+      "key": "monochromeWarmCool",
+      "code": "D193",
+      "scope": "custom_slot",
+      "labelZh": "黑白暖冷色調",
+      "labelEn": "Monochromatic Color",
+      "status": "write_rejected",
+      "verifiedValues": "None",
+      "dependencies": ["Tested only with ACROS selected."],
+      "notes": "All direct and ×10 candidate values were rejected with PTP response 201C during the 2026-09-02 ACROS retest; captured values were restored. This property remains locked."
+    },
+    {
+      "key": "monochromeMagentaGreen",
+      "code": "D194",
+      "scope": "custom_slot",
+      "labelZh": "黑白洋紅／綠色調",
+      "labelEn": "Monochromatic MG",
+      "status": "write_rejected",
+      "verifiedValues": "None",
+      "dependencies": ["Requires ACROS or MONOCHROME family when future testing is performed."],
+      "notes": "All direct and ×10 candidate values were rejected with PTP response 201C during the 2026-09-02 ACROS retest; captured values were restored. This property remains locked."
+    },
+    {
+      "key": "globalProperties",
+      "code": "D001/D007/D008/D00A/D00B/D00C/D017/D104",
+      "scope": "global",
+      "labelZh": "全域拍攝屬性",
+      "labelEn": "Global Shooting Properties",
+      "status": "read_detected_unverified",
+      "verifiedValues": "Read and current-value transport acceptance only",
+      "dependencies": [],
+      "notes": "All ten listed properties accepted their captured current values and read back unchanged in the 2026-09-02 test. They are deliberately not written from a Recipe: alternate values and recovery semantics remain unverified."
+    },
+    {
+      "key": "unknownVendorProperties",
+      "code": "D018/D01C/D023/D029/D02E/D030/D031/D032/D041/D16E/D208/D20B/D212/D21C/D320/D321/D34D/D36A/D36B",
+      "scope": "unknown",
+      "labelZh": "未知廠商屬性",
+      "labelEn": "Unknown Vendor Properties",
+      "status": "blocked_unknown",
+      "verifiedValues": "Read-only scan observations",
+      "dependencies": [],
+      "notes": "Never exposed for writing until a model-specific, reversible hardware validation record exists."
+    }
+  ]
+}

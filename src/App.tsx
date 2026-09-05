@@ -8,6 +8,8 @@ import {
 } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { SafeDialog } from "./SafeDialog";
+import { CapabilityMatrixPanel } from "./CapabilityMatrixPanel";
+import { CameraCapabilityCatalog } from "./CameraCapabilityCatalog";
 import {
   afModes,
   colorSpaces,
@@ -15,6 +17,7 @@ import {
   driveModes,
   dynamicRanges,
   filmSimulations,
+  supportedFilmSimulations,
   focusModes,
   grainSizes,
   imageQualities,
@@ -38,9 +41,11 @@ import {
 import {
   captureXm5RawPresetSnapshot,
   clearXm5CustomSlot,
+  deleteDesktopRecipe,
   discoverCameras,
   isDesktop,
   listCameraBackups,
+  listPendingWriteJournals,
   loadDesktopRecipes,
   probeCameraDeviceInfo,
   readCameraSlotSelector,
@@ -64,6 +69,7 @@ import {
   type RecipeWriteResult,
   type RawPtpPresetSnapshot,
   type SlotSelectionResult,
+  type WriteJournalSummary,
 } from "./lib/camera";
 import {
   localeOptions,
@@ -79,8 +85,15 @@ import {
   saveRecipes,
 } from "./lib/recipeCodec";
 import { exportFpProfile, parseFpProfile, type FpFormat } from "./lib/fpProfile";
+import { isSafeExternalUrl } from "./lib/externalUrl";
 
-type Page = "library" | "camera" | "installed" | "import";
+type Page =
+  | "library"
+  | "camera"
+  | "installed"
+  | "import"
+  | "capabilities"
+  | "catalog";
 type Translator = (key: CopyKey) => string;
 const numericKeys = [
   "highlight",
@@ -114,7 +127,7 @@ const monochromeFilmSimulations = new Set<RecipeSettings["filmSimulation"]>([
   "MONOCHROME_G",
   "SEPIA",
 ]);
-type DeletedRecipe = { recipe: Recipe; index: number };
+type DeletedRecipe = { recipe: Recipe; index: number; deletedAt: string };
 type SlotAssignments = Record<string, string>;
 const slotAssignmentsStorageKey = "fuji-recipe-manager/slot-assignments/v1";
 const isoAutoMaximumOptions = isoAutoMaximums.map(String);
@@ -151,15 +164,6 @@ function formatDateTime(locale: Locale, value: string | number | Date) {
   }).format(new Date(value));
 }
 
-function isSafeExternalUrl(value: string) {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" || url.protocol === "http:";
-  } catch {
-    return false;
-  }
-}
-
 function App() {
   const [recipes, setRecipes] = useState<Recipe[]>(loadRecipes);
   const [selectedId, setSelectedId] = useState(recipes[0]?.id ?? "");
@@ -188,11 +192,14 @@ function App() {
   const [deletedRecipe, setDeletedRecipe] = useState<DeletedRecipe>();
   const [importingRecipe, setImportingRecipe] = useState<Recipe>();
   const [backupRefresh, setBackupRefresh] = useState(0);
+  const [pendingWriteJournals, setPendingWriteJournals] = useState<WriteJournalSummary[]>([]);
   const [slotAssignments, setSlotAssignments] =
     useState<SlotAssignments>(loadSlotAssignments);
   const [desktopLibraryReady, setDesktopLibraryReady] = useState(!isDesktop);
   const fileInput = useRef<HTMLInputElement>(null);
   const desktopSaveTimer = useRef<number>();
+  const desktopSaveQueue = useRef(Promise.resolve());
+  const pendingRecipeDeletes = useRef(new Map<string, string>());
   const selected =
     recipes.find((recipe) => recipe.id === selectedId) ?? recipes[0];
   const assignedSlotsByRecipe = useMemo(() => {
@@ -225,15 +232,9 @@ function App() {
       ).sort((left, right) => left.localeCompare(right, locale)),
     [locale, recipes],
   );
-  const availableFilmSimulations = useMemo(
-    () =>
-      filmSimulations.filter((filmSimulation) =>
-        recipes.some(
-          (recipe) => recipe.settings.filmSimulation === filmSimulation,
-        ),
-      ),
-    [recipes],
-  );
+  // Always show the complete, verified set in the filter. A simulation that
+  // does not occur in the local library simply produces an empty result.
+  const availableFilmSimulations = supportedFilmSimulations;
   const visible = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase(locale);
     return recipes.filter((recipe) => {
@@ -299,13 +300,24 @@ function App() {
 
   useEffect(() => {
     if (!desktopLibraryReady) return;
-    saveRecipes(recipes);
-    if (!isDesktop) return;
+    if (!isDesktop) {
+      saveRecipes(recipes);
+      return;
+    }
     window.clearTimeout(desktopSaveTimer.current);
     desktopSaveTimer.current = window.setTimeout(() => {
-      void saveDesktopRecipes(recipes).catch(() =>
-        setNotice(t("savingLibraryFailed")),
-      );
+      const recipesToSave = recipes;
+      const deletions = Array.from(pendingRecipeDeletes.current.entries());
+      pendingRecipeDeletes.current.clear();
+      desktopSaveQueue.current = desktopSaveQueue.current
+        .catch(() => undefined)
+        .then(async () => {
+          await saveDesktopRecipes(recipesToSave);
+          for (const [id, deletedAt] of deletions) {
+            await deleteDesktopRecipe(id, deletedAt);
+          }
+        })
+        .catch(() => setNotice(t("savingLibraryFailed")));
     }, 350);
     return () => window.clearTimeout(desktopSaveTimer.current);
   }, [desktopLibraryReady, recipes]);
@@ -328,17 +340,40 @@ function App() {
   }, [slotAssignments]);
   useEffect(() => {
     if (!isDesktop) return;
-    void loadDesktopRecipes()
-      .then((stored) => {
+    void (async () => {
+      try {
+        const stored = await loadDesktopRecipes();
         if (stored.length) {
           const normalized = stored.map(normalizeRecipe);
           setRecipes(normalized);
           setSelectedId(normalized[0]?.id ?? "");
+        } else {
+          // localStorage is a one-time migration source for desktop users.
+          // SQLite becomes authoritative after this completes.
+          await saveDesktopRecipes(recipes);
+        }
+      } catch {
+        setNotice(t("databaseUnavailable"));
+      } finally {
+        setDesktopLibraryReady(true);
+      }
+    })();
+  }, []);
+  useEffect(() => {
+    if (!isDesktop) return;
+    void listPendingWriteJournals()
+      .then((journals) => {
+        setPendingWriteJournals(journals);
+        if (journals.length) {
+          setNotice(
+            locale === "zh-TW"
+              ? `偵測到 ${journals.length} 筆未完成的相機寫入；請到「相機」頁面檢查並回復。`
+              : `${journals.length} incomplete camera write(s) need review. Open Camera to inspect and restore.`,
+          );
         }
       })
-      .catch(() => setNotice(t("databaseUnavailable")))
-      .finally(() => setDesktopLibraryReady(true));
-  }, []);
+      .catch(() => undefined);
+  }, [backupRefresh, locale]);
 
   function updateRecipe(recipe: Recipe) {
     const updated = { ...recipe, updatedAt: new Date().toISOString() };
@@ -365,17 +400,26 @@ function App() {
     const remaining = recipes.filter((item) => item.id !== selected.id);
     setRecipes(remaining);
     setSelectedId(remaining[0].id);
-    setDeletedRecipe({ recipe: selected, index });
+    const deletedAt = new Date().toISOString();
+    pendingRecipeDeletes.current.set(selected.id, deletedAt);
+    setDeletedRecipe({ recipe: selected, index, deletedAt });
     setNotice(t("recipeDeleted"));
   }
   function undoDelete() {
     if (!deletedRecipe) return;
+    const restoredRecipe = {
+      ...deletedRecipe.recipe,
+      // A delete can already be queued when Undo is clicked. Give the restore
+      // a newer revision so the durable tombstone cannot suppress it.
+      updatedAt: new Date().toISOString(),
+    };
     setRecipes((items) => {
       const restored = [...items];
-      restored.splice(deletedRecipe.index, 0, deletedRecipe.recipe);
+      restored.splice(deletedRecipe.index, 0, restoredRecipe);
       return restored;
     });
-    setSelectedId(deletedRecipe.recipe.id);
+    setSelectedId(restoredRecipe.id);
+    pendingRecipeDeletes.current.delete(deletedRecipe.recipe.id);
     setDeletedRecipe(undefined);
     setNotice(t("recipeRestored"));
   }
@@ -591,7 +635,11 @@ function App() {
         ? t("connectCare")
         : page === "installed"
           ? t("installedTitle")
-          : t("bringRecipe");
+          : page === "capabilities"
+            ? t("capabilityDatabaseTitle")
+            : page === "catalog"
+              ? t("capabilityCatalogTitle")
+            : t("bringRecipe");
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -640,6 +688,20 @@ function App() {
           onClick={() => setPage("import")}
         >
           {t("importRecipe")}
+        </button>
+        <button
+          className={"nav " + (page === "capabilities" ? "active" : "")}
+          aria-current={page === "capabilities" ? "page" : undefined}
+          onClick={() => setPage("capabilities")}
+        >
+          {t("capabilityDatabase")}
+        </button>
+        <button
+          className={"nav " + (page === "catalog" ? "active" : "")}
+          aria-current={page === "catalog" ? "page" : undefined}
+          onClick={() => setPage("catalog")}
+        >
+          {t("capabilityCatalog")}
         </button>
         <label className="language-picker">
           <span>{t("settings")}</span>
@@ -840,6 +902,8 @@ function App() {
             status={status || t("noCamera")}
             onScan={scanCamera}
             refreshKey={backupRefresh}
+            pendingWriteJournals={pendingWriteJournals}
+            onRecoveryUpdated={() => setBackupRefresh((value) => value + 1)}
             locale={locale}
             t={t}
           />
@@ -852,6 +916,17 @@ function App() {
             onSlotCleared={clearRecipeSlotAssignment}
             t={t}
           />
+        )}
+        {page === "capabilities" && (
+          <CapabilityMatrixPanel
+            devices={devices}
+            locale={locale}
+            onScan={scanCamera}
+            t={t}
+          />
+        )}
+        {page === "catalog" && (
+          <CameraCapabilityCatalog locale={locale} t={t} />
         )}
         {page === "import" && (
           <section className="import-panel">
@@ -1748,6 +1823,7 @@ function CameraImportDialog({
   const [capability, setCapability] = useState<CameraCapabilityRecord>();
   const [capabilityError, setCapabilityError] = useState("");
   const [rawSnapshot, setRawSnapshot] = useState<RawPtpPresetSnapshot>();
+  const [deviceInfo, setDeviceInfo] = useState<PtpDeviceInfoResult>();
   const writeBlockers = xm5WriteBlockers(recipe.settings);
   const cropImageSizeSelected = recipe.settings.imageSize.endsWith("_1_25X_CROP");
   const cameraNameIsVerified = /^[\x20-\x7E]+$/.test(cameraName.trim());
@@ -1768,14 +1844,37 @@ function CameraImportDialog({
     setMessage(t("scanUsb") + "…");
     try {
       await onScan();
+      setDeviceInfo(undefined);
       setMessage("");
     } finally {
       setBusy(false);
     }
   }
 
+  async function verifyCameraIdentity() {
+    if (!camera) return;
+    setBusy(true);
+    setMessage(t("verifyWorking"));
+    try {
+      const identity = await probeCameraDeviceInfo(camera.usbId);
+      setDeviceInfo(identity);
+      setMessage(
+        identity.capabilityStateKey === "exact_experimental"
+          ? t("writeIdentityVerified")
+          : identity.capabilityNextAction,
+      );
+    } catch (error) {
+      const detail = String(error);
+      setMessage(detail.includes("exclusive access") ? t("ptpBusy") : detail);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const writeIdentityVerified =
+    deviceInfo?.capabilityStateKey === "exact_experimental";
+
   async function confirmImport() {
-    if (!camera || !slot) return;
+    if (!camera || !slot || !writeIdentityVerified) return;
     setBusy(true);
     setMessage(`${t("importWorking")} C${slot}…`);
     try {
@@ -1795,7 +1894,7 @@ function CameraImportDialog({
   }
 
   async function captureRawSnapshot() {
-    if (!camera || !slot) return;
+    if (!camera || !slot || !writeIdentityVerified) return;
     setBusy(true);
     setMessage(`${t("captureRawSnapshot")} C${slot}…`);
     try {
@@ -1856,10 +1955,16 @@ function CameraImportDialog({
           <div>
             <span>{t("selectedCamera")}</span>
             <strong>{camera?.profile ?? t("noCompatibleCamera")}</strong>
+            {deviceInfo && <small>{deviceInfo.model} · {deviceInfo.deviceVersion}</small>}
           </div>
-          <button className="secondary" disabled={busy} onClick={scan}>
-            {t("scanCameraAgain")}
-          </button>
+          <div className="probe-actions">
+            <button className="secondary" disabled={busy || !camera} onClick={verifyCameraIdentity}>
+              {t("verify")}
+            </button>
+            <button className="secondary" disabled={busy} onClick={scan}>
+              {t("scanCameraAgain")}
+            </button>
+          </div>
         </div>
         <div className="slot-overwrite-picker">
           <span>{t("selectTargetSlot")}</span>
@@ -1869,7 +1974,7 @@ function CameraImportDialog({
                 key={candidate}
                 className={slot === candidate ? "primary" : "secondary"}
                 aria-pressed={slot === candidate}
-                disabled={busy || !camera}
+                disabled={busy || !camera || !writeIdentityVerified}
                 onClick={() => setSlot(candidate)}
               >
                 C{candidate}
@@ -1892,7 +1997,7 @@ function CameraImportDialog({
             <p>{t("rawSnapshotDetail")}</p>
             <button
               className="secondary"
-              disabled={busy || !camera}
+              disabled={busy || !camera || !writeIdentityVerified}
               onClick={captureRawSnapshot}
             >
               {t("captureRawSnapshot")} C{slot}
@@ -1938,6 +2043,7 @@ function CameraImportDialog({
               !slot ||
               !cameraName.trim() ||
               !cameraNameIsVerified ||
+              !writeIdentityVerified ||
               writeBlockers.length > 0
             }
             onClick={confirmImport}
@@ -2028,18 +2134,41 @@ function InstalledPresetsPanel({
   const [resetCandidate, setResetCandidate] = useState<InstalledPreset>();
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [deviceInfo, setDeviceInfo] = useState<PtpDeviceInfoResult>();
   const camera = devices.find(
     (device) => device.isFujifilm && device.ptpInterfaceDetected,
   );
+  const writeIdentityVerified =
+    deviceInfo?.capabilityStateKey === "exact_experimental";
+  useEffect(() => setDeviceInfo(undefined), [camera?.usbId]);
+  async function verifyCameraIdentity() {
+    if (!camera) return;
+    setBusy(true);
+    setMessage(t("verifyWorking"));
+    try {
+      const identity = await probeCameraDeviceInfo(camera.usbId);
+      setDeviceInfo(identity);
+      setMessage(
+        identity.capabilityStateKey === "exact_experimental"
+          ? t("writeIdentityVerified")
+          : identity.capabilityNextAction,
+      );
+    } catch (error) {
+      const detail = String(error);
+      setMessage(detail.includes("exclusive access") ? t("ptpBusy") : detail);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function read() {
     const activeCamera =
       camera ??
       (await onScan()).find(
         (device) => device.isFujifilm && device.ptpInterfaceDetected,
       );
-    if (!activeCamera) {
+    if (!activeCamera || !writeIdentityVerified) {
       setPresets([]);
-      setMessage(t("noFuji"));
+      setMessage(activeCamera ? t("verifyIdentityBeforeWrite") : t("noFuji"));
       return;
     }
     setBusy(true);
@@ -2091,7 +2220,10 @@ function InstalledPresetsPanel({
           <button className="secondary" disabled={busy} onClick={resetReadResults}>
             {t("resetInstalled")}
           </button>
-          <button className="primary" disabled={busy} onClick={read}>
+          <button className="secondary" disabled={busy || !camera} onClick={verifyCameraIdentity}>
+            {t("verify")}
+          </button>
+          <button className="primary" disabled={busy || !writeIdentityVerified} onClick={read}>
             {t("readInstalled")}
           </button>
         </div>
@@ -2110,7 +2242,7 @@ function InstalledPresetsPanel({
               <em>{preset.name ? t("installedLabel") : t("emptyLabel")}</em>
               <button
                 className="secondary danger"
-                disabled={busy || !camera?.writeEnabled}
+                disabled={busy || !camera?.writeEnabled || !writeIdentityVerified}
                 onClick={() => setResetCandidate(preset)}
               >
                 {t("resetSlot")}
@@ -2185,6 +2317,8 @@ function CameraPanel({
   status,
   onScan,
   refreshKey,
+  pendingWriteJournals,
+  onRecoveryUpdated,
   locale,
   t,
 }: {
@@ -2192,6 +2326,8 @@ function CameraPanel({
   status: string;
   onScan: () => void;
   refreshKey: number;
+  pendingWriteJournals: WriteJournalSummary[];
+  onRecoveryUpdated: () => void;
   locale: Locale;
   t: Translator;
 }) {
@@ -2206,10 +2342,20 @@ function CameraPanel({
   const camera = devices.find(
     (device) => device.isFujifilm && device.ptpInterfaceDetected,
   );
+  const pendingForCamera = pendingWriteJournals.filter(
+    (journal) => journal.usbId === camera?.usbId,
+  );
+  const writeIdentityVerified =
+    deviceInfo?.capabilityStateKey === "exact_experimental";
   useEffect(() => {
     if (camera) void loadBackups();
     else setBackups([]);
   }, [camera?.usbId, refreshKey]);
+  useEffect(() => {
+    setDeviceInfo(undefined);
+    setSlotValue(undefined);
+    setSlotSelection(undefined);
+  }, [camera?.usbId]);
 
   async function loadBackups() {
     if (!camera) return;
@@ -2266,6 +2412,7 @@ function CameraPanel({
     try {
       await restoreXm5Backup(camera.usbId, backup.id);
       setMessage(t("backupRestored"));
+      onRecoveryUpdated();
     } catch (error) {
       setMessage(t("restoreFailed") + ": " + String(error));
     } finally {
@@ -2319,7 +2466,12 @@ function CameraPanel({
               {t("readSelector")}
             </button>
           </div>
-          {camera.writeEnabled && (
+          {camera.writeEnabled && !writeIdentityVerified && (
+            <p className="probe-message" role="status">
+              {t("verifyIdentityBeforeWrite")}
+            </p>
+          )}
+          {camera.writeEnabled && writeIdentityVerified && (
             <div className="slot-picker">
               <span>{t("selectSlot")}</span>
               <div>
@@ -2394,6 +2546,29 @@ function CameraPanel({
           )}
           {
             <div className="backup-panel">
+              {pendingForCamera.length > 0 && (
+                <section className="recovery-panel" aria-label={t("pendingRecoveryTitle")}>
+                  <strong>{t("pendingRecoveryTitle")}</strong>
+                  <p>{t("pendingRecoveryIntro")}</p>
+                  {pendingForCamera.map((journal) => {
+                    const backup = backups.find((item) => item.id === journal.backupId);
+                    return (
+                      <div key={journal.id}>
+                        <span>C{journal.slot} · {formatDateTime(locale, journal.createdAt)}</span>
+                        <em>{journal.state === "recovery_failed" ? t("pendingRecoveryFailed") : t("pendingRecoveryWriting")}</em>
+                        {journal.error && <small>{journal.error}</small>}
+                        <button
+                          className="secondary"
+                          disabled={busy || !backup || !writeIdentityVerified}
+                          onClick={() => backup && setRestoreCandidate(backup)}
+                        >
+                          {t("recoveryBackup")}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </section>
+              )}
               <p className="eyebrow">{t("backupHistory")}</p>
               {backups.length ? (
                 <div className="device-table">

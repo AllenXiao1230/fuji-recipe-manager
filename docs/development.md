@@ -4,6 +4,12 @@
 
 Phase 1 contains one experimental write path: X-M5 firmware 1.30 through USB ID `04CB:030C`. Before it sends a property, the app saves a durable SQLite snapshot and write journal; it reads each property back and verifies rollback if any write fails. No other model may call `SetDevicePropValue` until it has its own capability record and hardware checklist.
 
+The UI must also complete a fresh read-only DeviceInfo identity probe before it
+exposes a custom-slot mutation. A matching USB product ID alone is never a UI
+or backend write grant. On launch, `writing` and `recovery_failed` journals are
+listed for review; a journal is cleared only when its associated backup has
+been manually restored with read-back verification.
+
 The checked-in record is [`../data/capabilities/fujifilm-xm5-1.30.json`](../data/capabilities/fujifilm-xm5-1.30.json). It is loaded by `camera-xm5` and exposed to the desktop UI; it must be updated alongside the encoder, recovery allow-list, and unit tests. A direct `GetDevicePropValue` observation never changes a field from `read_detected_unverified` to `write_verified`.
 
 ## macOS PTP interface ownership
@@ -103,6 +109,7 @@ cargo fmt --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 npm run check
+npm run test
 npm run build
 ```
 

@@ -1,6 +1,33 @@
 # Camera capability matrix
 
 This matrix prevents a USB product name from being mistaken for write support.
+
+## Local capability-matrix database
+
+The desktop app includes a local SQLite `local_capability_matrices` table for
+documenting a specific Fujifilm camera by **USB ID + model + firmware**. A
+matrix can be created from a read-only PTP DeviceInfo result or entered
+manually, then edited to retain:
+
+- custom-slot count and labels;
+- field name in Traditional Chinese and English;
+- observed PTP property code and scope;
+- `read_detected_unverified`, `write_rejected`, or `blocked_unknown` state;
+- a source URL and evidence/dependency/test notes.
+
+Use the official camera specification and owner’s manual as the primary source
+for menu options and dependencies. For example, Fujifilm’s [X-M5
+specifications](https://www.fujifilm-x.com/en-us/products/cameras/x-m5/specifications/)
+list 20 Film Simulation modes and Dynamic Range/White Balance constraints, and
+the [X-M5 owner’s manual](https://fujifilm-dsc.com/en/manual/x-m5/) describes
+when image-quality settings are available. Community lists and statistical
+datasets may be stored as a source URL or note, but they remain unverified
+evidence.
+
+**A local matrix cannot mark a field `write_verified`, cannot enable PTP
+writes, and cannot override a compiled capability record.** Promotion to a
+trusted write record still requires the reversible per-model hardware process
+below.
 Every Fujifilm USB device is discoverable; only a model and firmware record that
 has completed the listed gates may expose a Recipe write action.
 

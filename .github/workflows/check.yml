@@ -19,11 +19,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.12.0
           cache: npm
-      - run: npm install
+      - run: npm ci
       - run: npm run check
+      - run: npm run test
       - run: npm run build
+      - run: npm audit --audit-level=high
   desktop-build:
     name: Desktop build (${{ matrix.os }})
     strategy:
@@ -36,7 +38,41 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.12.0
           cache: npm
       - run: npm ci
       - run: npm run tauri -- build --no-bundle
+  desktop-bundle:
+    name: Unsigned release bundle (${{ matrix.os }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+      - run: npm ci
+      - run: npm run tauri -- build
+      - name: Create macOS checksums
+        if: runner.os == 'macOS'
+        run: find target/release/bundle -type f -exec shasum -a 256 {} \; > target/release/bundle/SHA256SUMS.txt
+      - name: Create Windows checksums
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-ChildItem target/release/bundle -Recurse -File |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), $_.Path } |
+            Set-Content target/release/bundle/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Fuji-Recipe-Manager-${{ matrix.os }}-unsigned
+          path: target/release/bundle
+          if-no-files-found: error
+          retention-days: 14

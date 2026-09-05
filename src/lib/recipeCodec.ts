@@ -467,7 +467,7 @@ function applyWhiteBalance(recipe: Recipe, value: string) {
   const shift =
     value.match(/(?:red|r)\s*([+-]\s*\d+).*?(?:blue|b)\s*([+-]\s*\d+)/i) ??
     value.match(/([+-]\s*\d+)\s*(?:red|r).*?([+-]\s*\d+)\s*(?:blue|b)/i);
-  const mode = value.split(/[,;]|\s+(?:red|r)\s*[+-]/i)[0].trim();
+  const mode = value.split(/[,，;；]|\s+(?:red|r)\s*[+-]/i)[0].trim();
   recipe.settings.whiteBalance = {
     ...recipe.settings.whiteBalance,
     mode: normaliseEnum(
@@ -497,7 +497,7 @@ export function parseRecipeText(
     .map((line) => line.trim())
     .filter(Boolean);
   for (const line of lines) {
-    const [rawKey, ...rawValue] = line.split(/\s*[:\t]\s*/);
+    const [rawKey, ...rawValue] = line.split(/\s*[:：\t]\s*/);
     const key = rawKey.toLowerCase().replace(/[：]/g, ":");
     const value = rawValue.join(":").trim();
     if (!value) continue;

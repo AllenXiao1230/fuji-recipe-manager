@@ -2,7 +2,7 @@
 
 [English](README.md) | 繁體中文
 
-Fuji Recipe Manager 是一套支援 macOS 與 Windows 的本機優先桌面程式，用來管理 Fujifilm 的底片模擬 Recipe。技術基礎為 Tauri 2、React、TypeScript 與 Rust。
+Fuji Recipe Manager 是一套支援 macOS 與 Windows 的本機優先桌面程式，用來管理 Fujifilm 的軟片模擬配方（Recipe）。技術基礎為 Tauri 2、React、TypeScript 與 Rust。
 
 專案以安全為先：Recipe 可隨時在本機建立、比較、匯入與匯出；相機操作則必須先通過「機型＋韌體」的分階段硬體驗證。
 
@@ -15,7 +15,9 @@ Fuji Recipe Manager 是一套支援 macOS 與 Windows 的本機優先桌面程�
 ## 現階段已完成
 
 - Tauri 2 桌面殼層與可調整版面的 React Recipe 工作區。
-- 桌面版使用本機 SQLite 保存 Recipe；瀏覽器開發模式則使用本機儲存作為替代。
+- 桌面版以本機 SQLite 作為 Recipe 資料庫唯一權威；瀏覽器開發模式才使用本機儲存。資料庫含 migration、WAL、樂觀版本與刪除 tombstone，可避免延遲儲存覆寫較新的資料。
+- 本機 SQLite 能力矩陣資料庫會依 Fujifilm USB ID、機型與韌體保存可設定的欄位範圍、觀察到的 PTP 代碼、來源類型、安全出處網址、證據摘要與驗證時間，但不會授予相機寫入權限。
+- 「相機能力總覽」會分開顯示可辨識的 Fujifilm 機型、受信任的機型／韌體記錄與本機研究矩陣；僅辨識到機型時仍維持唯讀探測。
 - Recipe 建立、編輯、搜尋、標籤、收藏、JSON／FRecipe 匯入匯出，以及常見 Recipe 文字格式解析。
 - Recipe 資料庫提供可組合篩選：軟片模擬、標籤（含未分類）、收藏、C1–C4 指派狀態與相機相容性；搜尋亦會比對 Recipe 名稱、描述、標籤、來源作者與相容機型。
 - 桌面版的 Recipe 資料庫欄（搜尋、篩選與卡片）與 Recipe 編輯器採獨立捲動；較長的編輯內容不會擠走資料庫控制項。
@@ -29,12 +31,12 @@ Fuji Recipe Manager 是一套支援 macOS 與 Windows 的本機優先桌面程�
 - 可還原的 X-M5 C4 寫入／讀回／還原測試，已涵蓋目前所有可寫入的 Recipe 欄位；列舉型選項逐一測試，數值欄位測試最小值、0 與最大值。
 - X-M5 顆粒 Off 會先寫入保留的「小／大」顆粒大小，再送出 `01 00` 關閉命令；相機分別讀回 `06 00`（小）或 `07 00`（大），此復原順序已編碼並有單元測試。
 - X-M5 firmware 1.30 對低於 `-2.0` 的高光與陰影會回覆 PTP `201C`，因此兩者在程式內限制為 `-2.0` 至 `+4.0`、步進 `0.5`。
-- 僅限 X-M5 的實驗性 GUI 寫入：寫入前會在 SQLite 保存自訂檔名稱（`D18D`）、Recipe 欄位備份與寫入日誌、逐欄讀回，失敗時執行可驗證的還原；每次操作後會恢復原本的作用中槽位。
+- 僅限 X-M5 的實驗性 GUI 寫入：UI 必須先驗證已連接 DeviceInfo 的機型與韌體，才會保存自訂檔名稱（`D18D`）、Recipe 欄位備份與寫入日誌、逐欄讀回；失敗時執行可驗證的還原，每次操作後會恢復原本的作用中槽位。
 - 可選的每組 Recipe 原始 C 槽保存：可讀取的 X-M5 自訂槽 PTP 原始位元組（包含相機拒絕寫入的欄位）可作為稽核／互通資料保存；它們是嚴格唯讀 metadata，絕不會被相機寫入或復原流程重送。
-- 可查看復原備份並執行明確、可驗證的 X-M5 還原操作。
+- 啟動時可偵測未完成寫入日誌、查看復原備份並執行明確、可驗證的 X-M5 還原操作；只有手動還原也讀回成功後，日誌才會被標記為已回復。
 - 版本化且內建的能力紀錄位於 `data/capabilities/fujifilm-xm5-1.30.json`；匯入視窗會列出所有欄位的「已驗證可寫入／已探測尚未驗證／相機拒絕（`201C`）／未知或禁止寫入」狀態。
 - X-M5 1.30 額外完成平滑膚色效果、sRGB／Adobe RGB、色溫（白平衡為「色溫」時）與已特別驗證的 `S 3:2`／`S 16:9`／`S 1:1`／`M 3:2`／`M 16:9`／`M 1:1`／`L 3:2`／`L 16:9`／`L 1:1`／`RAW`／`FINE`／`NORMAL`／`FINE+RAW`／`NORMAL+RAW` 影像 payload 寫入／讀回／還原支援。
-- 所有非 Auto 軟片模擬、動態範圍 Auto、白平衡白色優先／氛圍優先也已個別通過 X-M5 C4 寫入／讀回／還原驗證；軟片模擬 Auto 與白平衡 Custom 1–3 仍維持鎖定。
+- 所有 20 種非 Auto 軟片模擬、動態範圍 Auto、白平衡白色優先／氛圍優先也已個別通過 X-M5 C4 寫入／讀回／還原驗證；軟片模擬 Auto 與白平衡 Custom 1–3 仍維持鎖定。
 - 長時間曝光降噪與黑白暖冷／洋紅綠色調因實機回覆 `201C` 維持鎖定；已探測到的全域屬性也維持唯讀。
 - 支援 X RAW Studio `.FP1`、`.FP2`、`.FP3` 設定檔匯入／匯出；能安全保留的未映射 XML 會跟隨本機 Recipe 保存，序號資料會被移除，並明確提示未映射欄位。
 - 桌面版可由 JPEG／RAF metadata 建立本機 Recipe，並標記每個欄位為「已辨識／無法判定」。開發環境以 ExifTool 讀取 Fujifilm MakerNote；正式發行前必須在每個平台隨程式封裝並驗證該 metadata adapter。
@@ -55,6 +57,8 @@ Fuji Recipe Manager 是一套支援 macOS 與 Windows 的本機優先桌面程�
 
 ## 啟動桌面程式
 
+需要 Node.js 22.12 以上、Rust stable 與 Tauri 對應平台的建置前置條件。
+
 ```bash
 npm install
 npm run tauri dev
@@ -72,7 +76,7 @@ npm run tauri -- build --bundles app
 
 ### 建立 Windows `.exe`
 
-在 Windows 執行 [`build-windows-exe.bat`](build-windows-exe.bat)。它會檢查 Node.js、npm 與 Rust，缺少 JavaScript 相依套件時自動安裝，接著執行 TypeScript 檢查，最後以 Tauri 建立 `target\\release\\Fuji Recipe Manager.exe`。請先安裝 Rust MSVC toolchain、Microsoft C++ Build Tools 與 WebView2 Runtime；產出的 EXE 尚未簽章。
+在 Windows 執行 [`build-windows-exe.bat`](build-windows-exe.bat)。它需要 Node.js 22.12 以上、npm 與 Rust，會以 lockfile 安裝相依套件、執行 TypeScript 檢查與前端測試，最後以 Tauri 建立 `target\\release\\Fuji Recipe Manager.exe`。請先安裝 Rust MSVC toolchain、Microsoft C++ Build Tools 與 WebView2 Runtime；產出的 EXE 尚未簽章。
 
 ## Recipe 資料庫操作
 
@@ -134,6 +138,7 @@ build-windows-exe.bat       Windows EXE 建置輔助腳本
 src-tauri/                  原生 Tauri 殼層與本機 SQLite 資料庫
 src-tauri/icons/            已生成的 macOS、Windows 與各平台圖示資產
 src/                        React Recipe 工作區
+src/CapabilityMatrixPanel.tsx  本機相機能力矩陣資料庫 UI
 docs/                       硬體安全與發布文件
 ```
 
@@ -144,6 +149,7 @@ cargo fmt --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 npm run check
+npm run test
 npm run build
 ```
 

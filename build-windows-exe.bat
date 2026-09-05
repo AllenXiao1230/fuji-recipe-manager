@@ -13,15 +13,19 @@ echo.
 where node >nul 2>&1 || goto :missing_node
 where npm >nul 2>&1 || goto :missing_npm
 where cargo >nul 2>&1 || goto :missing_rust
+node -e "const [major,minor]=process.versions.node.split('.').map(Number); process.exit(major > 22 || (major === 22 && minor >= 12) ? 0 : 1)"
+if errorlevel 1 goto :node_too_old
 
-if not exist "node_modules\" (
-  echo Installing JavaScript dependencies...
-  call npm install
-  if errorlevel 1 goto :failed
-)
+echo Installing locked JavaScript dependencies...
+call npm ci
+if errorlevel 1 goto :failed
 
 echo Checking TypeScript...
 call npm run check
+if errorlevel 1 goto :failed
+
+echo Running frontend tests...
+call npm run test
 if errorlevel 1 goto :failed
 
 echo Building Windows executable...
@@ -46,7 +50,13 @@ echo This local executable is not code-signed. Sign it before distributing it.
 exit /b 0
 
 :missing_node
-echo Node.js was not found. Install the current Node.js LTS release, then run this file again.
+echo Node.js was not found. Install Node.js 22.12 or newer, then run this file again.
+exit /b 1
+
+:node_too_old
+echo Node.js 22.12 or newer is required by the checked-in build tools.
+echo Current version:
+node --version
 exit /b 1
 
 :missing_npm

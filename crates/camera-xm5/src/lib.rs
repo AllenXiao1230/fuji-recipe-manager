@@ -576,9 +576,12 @@ mod tests {
     }
 
     #[test]
-    fn all_hardware_verified_additional_enums_are_encoded() {
+    fn all_twenty_hardware_verified_film_simulations_are_encoded() {
         let mut recipe = recipe();
         for film_simulation in [
+            "PROVIA",
+            "VELVIA",
+            "ASTIA",
             "PRO_NEG_HI",
             "PRO_NEG_STD",
             "MONOCHROME",
@@ -589,8 +592,12 @@ mod tests {
             "ACROS_YE",
             "ACROS_R",
             "ACROS_G",
+            "CLASSIC_CHROME",
+            "ETERNA",
+            "CLASSIC_NEGATIVE",
             "ETERNA_BLEACH_BYPASS",
             "NOSTALGIC_NEGATIVE",
+            "REALA_ACE",
         ] {
             recipe.film_simulation = film_simulation.into();
             assert!(encode_recipe(&recipe).is_ok(), "{film_simulation}");

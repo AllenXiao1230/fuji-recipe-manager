@@ -82,6 +82,7 @@ values are now enabled in the X-M5 codec and GUI preflight.
 - Native Rust USB device enumeration via `nusb`.
 - Fujifilm-wide USB recognition across X Series, X100, GFX, FinePix, and unlisted Fujifilm bodies.
 - Local recipe editor, search, tags, favourites, import/export, and persistent SQLite library.
+- SQLite schema migration (`user_version`), WAL/busy-timeout configuration, optimistic per-Recipe upserts, and deletion tombstones. Desktop localStorage is now a migration/fallback source rather than a second authority.
 - Portable versioned recipe JSON (`schemaVersion: 1`).
 - Read-only camera discovery UI and `fuji-test` CLI.
 - Standards-based, opt-in `GetDeviceInfo` PTP probe; it is read-only and does not open a PTP session.
@@ -92,6 +93,8 @@ values are now enabled in the X-M5 codec and GUI preflight.
 - X-M5 firmware 1.30 reversible C2 tests for film simulation (`D192`), Color Chrome (`D196`), Chrome FX Blue (`D197`), white-balance mode and shifts (`D199`, `D19A`, `D19B`), high-ISO NR (`D1A1`), and grain (`D195`).
 - Physical X-M5 GUI write transaction verified end-to-end: a 15-field C4 Recipe write created a durable pre-write SQLite backup and journal, read every written field back, then restored the backup through the in-app confirmation dialog with read-back verification.
 - Recovery-backup list and explicit X-M5 restore action with an in-app confirmation dialog and read-back verification.
+- Startup-visible interrupted-write recovery journal. Pending journals cannot be dismissed by a UI action; they become `recovered_manually` only after the associated backup restore completes with read-back verification.
+- Camera mutations in the import, installed-preset, and Camera pages require a fresh DeviceInfo identity result with the stable `exact_experimental` capability state, rather than relying on USB product ID alone.
 - Per-Recipe raw C-slot snapshot capture for the exact X-M5 record. It preserves readable `D18D…D1A5` values and records unreadable codes, while keeping every raw byte outside both the writer and recovery allow-list.
 - Controlled CLI candidate capture for unverified Image Size / Image Quality values. It requires a value to be selected manually on a disposable C slot, reads only the reported raw value, restores the active C slot, and keeps the capability matrix locked pending a separate reversible verification.
 - Fixed desktop sidebar with an independent workspace scroll area, local Recipe-to-C-slot labels, and installed-preset synchronization by exact preset name.
@@ -101,6 +104,7 @@ values are now enabled in the X-M5 codec and GUI preflight.
 - `.FP1/.FP2/.FP3` local import/export with safe unmapped-field retention and serial-number removal. X RAW Studio round-trip compatibility is not yet a release claim.
 - JPEG/RAF metadata-to-Recipe import with per-field recognised/unavailable results. It is read-only; the present development implementation requires locally installed ExifTool.
 - RAF preview offline preflight and cleanup-oriented Rust transaction abstraction. No vendor camera transport adapter, RAF upload, conversion, or preview JPEG is implemented yet.
+- Frontend Vitest coverage for Recipe normalization/text import, safe external URL handling, and protected-dialog Escape behavior; CI runs frontend tests, production build, and dependency audit. Tag builds create explicitly unsigned macOS/Windows bundle artifacts with per-platform SHA-256 manifests for signing pipelines.
 
 ## Still required before a production camera importer release
 

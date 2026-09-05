@@ -10,7 +10,7 @@ use std::{
 };
 
 use camera_core::UsbId;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use usb_transport::UsbBackend;
@@ -18,9 +18,56 @@ use usb_transport::UsbBackend;
 struct LibraryDb(Mutex<Connection>);
 
 static RECORD_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const LIBRARY_DB_SCHEMA_VERSION: i64 = 2;
+
+fn default_local_matrix_schema_version() -> u32 {
+    1
+}
+
+fn default_local_matrix_source_kind() -> String {
+    "local_probe".to_string()
+}
 
 #[derive(Deserialize)]
 struct RecipeDocument(serde_json::Value);
+
+/// A user-maintained, local-only capability matrix. It is intentionally kept
+/// separate from the compiled capability record that gates camera writes:
+/// saving a matrix can document observations, but can never grant write access.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalCapabilityMatrix {
+    #[serde(default = "default_local_matrix_schema_version")]
+    schema_version: u32,
+    id: String,
+    manufacturer: String,
+    model: String,
+    firmware: String,
+    usb_ids: Vec<String>,
+    custom_slots: Vec<String>,
+    source_url: Option<String>,
+    #[serde(default = "default_local_matrix_source_kind")]
+    source_kind: String,
+    #[serde(default)]
+    evidence_summary: String,
+    #[serde(default)]
+    last_verified_at: Option<u128>,
+    created_at: u128,
+    updated_at: u128,
+    properties: Vec<LocalCapabilityMatrixProperty>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalCapabilityMatrixProperty {
+    key: String,
+    label_zh: String,
+    label_en: String,
+    code: String,
+    scope: String,
+    status: String,
+    notes: String,
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +85,16 @@ struct CameraDiscovery {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct CameraCapabilityCatalogEntry {
+    model: &'static str,
+    family: &'static str,
+    access: &'static str,
+    trusted_record_id: Option<String>,
+    trusted_firmware: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct PtpDeviceInfoResult {
     usb_id: String,
     interface_number: u8,
@@ -48,6 +105,7 @@ struct PtpDeviceInfoResult {
     manufacturer: String,
     model: String,
     device_version: String,
+    capability_state_key: String,
     capability_state: String,
     capability_record_id: Option<String>,
     capability_next_action: String,
@@ -140,6 +198,20 @@ struct CameraBackupSummary {
     property_count: usize,
 }
 
+/// A durable indicator that an interrupted write still needs human review.
+/// The associated backup remains the only source for a restoration attempt.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WriteJournalSummary {
+    id: String,
+    backup_id: String,
+    usb_id: String,
+    slot: u16,
+    created_at: u128,
+    state: String,
+    error: Option<String>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct InstalledPreset {
@@ -213,6 +285,27 @@ fn xm5_capability_record() -> camera_xm5::Xm5CapabilityRecord {
     camera_xm5::capability_record().clone()
 }
 
+/// The catalogue is intentionally recognition-oriented rather than a write
+/// allow-list. A model appears here to help users create a matrix, while only
+/// an exact trusted record can ever enable a writer.
+#[tauri::command]
+fn list_camera_capability_catalog() -> Vec<CameraCapabilityCatalogEntry> {
+    let xm5_record = camera_xm5::capability_record();
+    camera_fujifilm::KNOWN_MODELS
+        .iter()
+        .map(|profile| {
+            let is_xm5 = profile.model == "X-M5";
+            CameraCapabilityCatalogEntry {
+                model: profile.model,
+                family: profile.family.label(),
+                access: profile.recipe_access.label(),
+                trusted_record_id: is_xm5.then(|| xm5_record.record_id.clone()),
+                trusted_firmware: is_xm5.then(|| xm5_record.firmware.clone()),
+            }
+        })
+        .collect()
+}
+
 #[tauri::command]
 fn probe_camera_device_info(usb_id: String) -> Result<PtpDeviceInfoResult, String> {
     let id = parse_usb_id(&usb_id)?;
@@ -229,6 +322,7 @@ fn probe_camera_device_info(usb_id: String) -> Result<PtpDeviceInfoResult, Strin
         manufacturer: probe.manufacturer,
         model: probe.model,
         device_version: probe.device_version,
+        capability_state_key: capability.state.key().to_string(),
         capability_state: capability.state.label().to_string(),
         capability_record_id: capability.record_id.map(str::to_string),
         capability_next_action: capability.state.next_action().to_string(),
@@ -1330,6 +1424,294 @@ fn update_write_journal(database: &LibraryDb, journal: &WriteJournal) -> Result<
     Ok(())
 }
 
+fn validate_local_capability_matrix(matrix: &mut LocalCapabilityMatrix) -> Result<(), String> {
+    if matrix.schema_version != 1 {
+        return Err("unsupported local capability matrix schema version".to_string());
+    }
+    matrix.id = matrix.id.trim().to_string();
+    matrix.manufacturer = matrix.manufacturer.trim().to_ascii_uppercase();
+    matrix.model = matrix.model.trim().to_string();
+    matrix.firmware = matrix.firmware.trim().to_string();
+    matrix.usb_ids = matrix
+        .usb_ids
+        .iter()
+        .map(|id| id.trim().to_ascii_uppercase())
+        .filter(|id| !id.is_empty())
+        .collect();
+    matrix.custom_slots = matrix
+        .custom_slots
+        .iter()
+        .map(|slot| slot.trim().to_ascii_uppercase())
+        .filter(|slot| !slot.is_empty())
+        .collect();
+    matrix.source_kind = matrix.source_kind.trim().to_ascii_lowercase();
+    matrix.evidence_summary = matrix.evidence_summary.trim().to_string();
+    if let Some(source_url) = &matrix.source_url {
+        let source_url = source_url.trim();
+        matrix.source_url = (!source_url.is_empty()).then(|| source_url.to_string());
+    }
+
+    if matrix.id.is_empty() || matrix.model.is_empty() || matrix.firmware.is_empty() {
+        return Err("capability matrix requires an ID, model, and firmware".to_string());
+    }
+    if matrix.manufacturer != "FUJIFILM" {
+        return Err("local capability matrices are limited to FUJIFILM cameras".to_string());
+    }
+    if matrix.usb_ids.is_empty() {
+        return Err("capability matrix requires at least one USB ID".to_string());
+    }
+    if !matches!(
+        matrix.source_kind.as_str(),
+        "official" | "community" | "local_probe"
+    ) {
+        return Err(
+            "capability matrix source kind must be official, community, or local_probe".to_string(),
+        );
+    }
+    if let Some(source_url) = &matrix.source_url {
+        if !is_safe_external_url(source_url) {
+            return Err("capability matrix source URL must use http or https".to_string());
+        }
+    }
+    for id in &matrix.usb_ids {
+        parse_usb_id(id)?;
+    }
+    if matrix.custom_slots.iter().any(|slot| {
+        !matches!(
+            slot.as_str(),
+            "C1" | "C2" | "C3" | "C4" | "C5" | "C6" | "C7"
+        )
+    }) {
+        return Err("custom slots must use C1 through C7 labels".to_string());
+    }
+
+    let mut keys = std::collections::HashSet::new();
+    for property in &mut matrix.properties {
+        property.key = property.key.trim().to_string();
+        property.label_zh = property.label_zh.trim().to_string();
+        property.label_en = property.label_en.trim().to_string();
+        property.code = property.code.trim().to_ascii_uppercase();
+        property.scope = property.scope.trim().to_ascii_lowercase();
+        property.status = property.status.trim().to_ascii_lowercase();
+        property.notes = property.notes.trim().to_string();
+        if property.key.is_empty() || property.label_zh.is_empty() || property.label_en.is_empty() {
+            return Err("every capability property needs a key and bilingual labels".to_string());
+        }
+        if !property.code.is_empty()
+            && (property.code.len() != 4
+                || !property.code.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        {
+            return Err(format!(
+                "{} PTP code must be four hexadecimal characters",
+                property.key
+            ));
+        }
+        if !keys.insert(property.key.clone()) {
+            return Err(format!(
+                "duplicate capability property key: {}",
+                property.key
+            ));
+        }
+        if !matches!(
+            property.scope.as_str(),
+            "custom_slot" | "global" | "unknown"
+        ) {
+            return Err(format!("{} has an invalid property scope", property.key));
+        }
+        if property.status == "write_verified" {
+            return Err(format!(
+                "{} cannot be locally marked write verified; complete a hardware write/read-back/restore validation and update the trusted capability record",
+                property.key
+            ));
+        }
+        if !matches!(
+            property.status.as_str(),
+            "read_detected_unverified" | "write_rejected" | "blocked_unknown"
+        ) {
+            return Err(format!(
+                "{} has an invalid local capability status",
+                property.key
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn list_local_capability_matrices_inner(
+    database: &LibraryDb,
+) -> Result<Vec<LocalCapabilityMatrix>, String> {
+    let connection = database
+        .0
+        .lock()
+        .map_err(|_| "recipe database lock failed".to_string())?;
+    let mut statement = connection
+        .prepare("SELECT payload FROM local_capability_matrices ORDER BY updated_at DESC")
+        .map_err(|error| error.to_string())?;
+    let matrices = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?
+        .map(|payload| {
+            payload
+                .map_err(|error| error.to_string())
+                .and_then(|payload| {
+                    serde_json::from_str(&payload).map_err(|error| error.to_string())
+                })
+        })
+        .collect();
+    matrices
+}
+
+fn save_local_capability_matrix_inner(
+    mut matrix: LocalCapabilityMatrix,
+    database: &LibraryDb,
+) -> Result<LocalCapabilityMatrix, String> {
+    validate_local_capability_matrix(&mut matrix)?;
+    let now = timestamp_millis();
+    if matrix.created_at == 0 {
+        matrix.created_at = now;
+    }
+    matrix.updated_at = now;
+    let connection = database
+        .0
+        .lock()
+        .map_err(|_| "recipe database lock failed".to_string())?;
+    connection
+        .execute(
+            "INSERT INTO local_capability_matrices (id, manufacturer, model, firmware, usb_ids, updated_at, payload)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET
+                manufacturer = excluded.manufacturer,
+                model = excluded.model,
+                firmware = excluded.firmware,
+                usb_ids = excluded.usb_ids,
+                updated_at = excluded.updated_at,
+                payload = excluded.payload",
+            (
+                &matrix.id,
+                &matrix.manufacturer,
+                &matrix.model,
+                &matrix.firmware,
+                serde_json::to_string(&matrix.usb_ids).map_err(|error| error.to_string())?,
+                matrix.updated_at.to_string(),
+                serde_json::to_string(&matrix).map_err(|error| error.to_string())?,
+            ),
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(matrix)
+}
+
+#[tauri::command]
+fn list_local_capability_matrices(
+    database: tauri::State<'_, LibraryDb>,
+) -> Result<Vec<LocalCapabilityMatrix>, String> {
+    list_local_capability_matrices_inner(database.inner())
+}
+
+#[tauri::command]
+fn save_local_capability_matrix(
+    matrix: LocalCapabilityMatrix,
+    database: tauri::State<'_, LibraryDb>,
+) -> Result<LocalCapabilityMatrix, String> {
+    save_local_capability_matrix_inner(matrix, database.inner())
+}
+
+#[tauri::command]
+fn delete_local_capability_matrix(
+    id: String,
+    database: tauri::State<'_, LibraryDb>,
+) -> Result<(), String> {
+    let connection = database
+        .0
+        .lock()
+        .map_err(|_| "recipe database lock failed".to_string())?;
+    connection
+        .execute("DELETE FROM local_capability_matrices WHERE id = ?1", [&id])
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn list_pending_write_journals_inner(
+    database: &LibraryDb,
+) -> Result<Vec<WriteJournalSummary>, String> {
+    let connection = database
+        .0
+        .lock()
+        .map_err(|_| "recipe database lock failed".to_string())?;
+    let mut statement = connection
+        .prepare(
+            "SELECT payload FROM write_journals
+             WHERE state IN ('writing', 'recovery_failed')
+             ORDER BY created_at DESC",
+        )
+        .map_err(|error| error.to_string())?;
+    let journals = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?
+        .map(|payload| {
+            let journal: WriteJournal =
+                serde_json::from_str(&payload.map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?;
+            Ok(WriteJournalSummary {
+                id: journal.id,
+                backup_id: journal.backup_id,
+                usb_id: journal.usb_id,
+                slot: journal.slot,
+                created_at: journal.created_at,
+                state: journal.state,
+                error: journal.error,
+            })
+        })
+        .collect();
+    journals
+}
+
+#[tauri::command]
+fn list_pending_write_journals(
+    database: tauri::State<'_, LibraryDb>,
+) -> Result<Vec<WriteJournalSummary>, String> {
+    list_pending_write_journals_inner(database.inner())
+}
+
+/// A manual restore is only acknowledged after the model-specific restore
+/// command has read every captured value back successfully.
+fn mark_pending_journals_recovered(database: &LibraryDb, backup_id: &str) -> Result<(), String> {
+    let connection = database
+        .0
+        .lock()
+        .map_err(|_| "recipe database lock failed".to_string())?;
+    let journals = {
+        let mut statement = connection
+            .prepare(
+                "SELECT payload FROM write_journals
+                 WHERE backup_id = ?1 AND state IN ('writing', 'recovery_failed')",
+            )
+            .map_err(|error| error.to_string())?;
+        let journals = statement
+            .query_map([backup_id], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?
+            .map(|payload| {
+                serde_json::from_str::<WriteJournal>(&payload.map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        journals
+    };
+    for mut journal in journals {
+        journal.state = "recovered_manually".to_string();
+        connection
+            .execute(
+                "UPDATE write_journals SET state = ?2, payload = ?3 WHERE id = ?1",
+                (
+                    &journal.id,
+                    &journal.state,
+                    serde_json::to_string(&journal).map_err(|error| error.to_string())?,
+                ),
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn list_camera_backups(
     usb_id: String,
@@ -1388,13 +1770,20 @@ fn restore_xm5_backup(
     let restored = restore_captured_properties(id, &backup.properties);
     let selector_result = restore_selected_slot(id, previous_slot);
     match (restored, selector_result) {
-        (Ok(()), Ok(())) => Ok(CameraBackupSummary {
-            id: backup.id,
-            usb_id: backup.usb_id,
-            slot: backup.slot,
-            captured_at: backup.captured_at,
-            property_count: backup.properties.len(),
-        }),
+        (Ok(()), Ok(())) => {
+            mark_pending_journals_recovered(database.inner(), &backup.id).map_err(|error| {
+                format!(
+                    "backup was restored and verified, but its recovery journal could not be acknowledged: {error}"
+                )
+            })?;
+            Ok(CameraBackupSummary {
+                id: backup.id,
+                usb_id: backup.usb_id,
+                slot: backup.slot,
+                captured_at: backup.captured_at,
+                property_count: backup.properties.len(),
+            })
+        }
         (Err(error), Ok(())) => Err(format!("backup restore failed: {error}")),
         (Ok(()), Err(error)) => Err(format!(
             "backup was restored, but active slot recovery failed: {error}"
@@ -1456,11 +1845,18 @@ fn list_recipes(database: tauri::State<'_, LibraryDb>) -> Result<Vec<serde_json:
     recipes
 }
 
+/// Persist changed documents without clearing the library. The updatedAt value
+/// is an optimistic revision: a delayed save from another window cannot
+/// overwrite a newer local edit.
 #[tauri::command]
-fn replace_recipes(
+fn upsert_recipes(
     recipes: Vec<RecipeDocument>,
     database: tauri::State<'_, LibraryDb>,
 ) -> Result<(), String> {
+    upsert_recipes_inner(recipes, database.inner())
+}
+
+fn upsert_recipes_inner(recipes: Vec<RecipeDocument>, database: &LibraryDb) -> Result<(), String> {
     let mut connection = database
         .0
         .lock()
@@ -1468,21 +1864,43 @@ fn replace_recipes(
     let transaction = connection
         .transaction()
         .map_err(|error| error.to_string())?;
-    transaction
-        .execute("DELETE FROM recipes", [])
-        .map_err(|error| error.to_string())?;
     for RecipeDocument(recipe) in recipes {
         let id = recipe
             .get("id")
             .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
             .ok_or("recipe missing id")?;
         let updated_at = recipe
             .get("updatedAt")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or("recipe missing updatedAt")?;
+        let deleted_at: Option<String> = transaction
+            .query_row(
+                "SELECT deleted_at FROM recipe_tombstones WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if deleted_at
+            .as_deref()
+            .is_some_and(|deleted_at| deleted_at >= updated_at)
+        {
+            continue;
+        }
+        transaction
+            .execute("DELETE FROM recipe_tombstones WHERE id = ?1", [id])
+            .map_err(|error| error.to_string())?;
         transaction
             .execute(
-                "INSERT INTO recipes (id, updated_at, payload) VALUES (?1, ?2, ?3)",
+                "INSERT INTO recipes (id, updated_at, payload) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET
+                    updated_at = excluded.updated_at,
+                    payload = excluded.payload
+                 WHERE excluded.updated_at >= recipes.updated_at",
                 (
                     id,
                     updated_at,
@@ -1494,6 +1912,48 @@ fn replace_recipes(
     transaction.commit().map_err(|error| error.to_string())
 }
 
+/// A deletion is stored as a tombstone so a delayed save cannot silently bring
+/// a Recipe back from a second application window.
+#[tauri::command]
+fn delete_recipe(
+    id: String,
+    deleted_at: String,
+    database: tauri::State<'_, LibraryDb>,
+) -> Result<(), String> {
+    delete_recipe_inner(id, deleted_at, database.inner())
+}
+
+fn delete_recipe_inner(id: String, deleted_at: String, database: &LibraryDb) -> Result<(), String> {
+    let id = id.trim();
+    let deleted_at = deleted_at.trim();
+    if id.is_empty() || deleted_at.is_empty() {
+        return Err("recipe deletion requires an ID and timestamp".to_string());
+    }
+    let mut connection = database
+        .0
+        .lock()
+        .map_err(|_| "recipe database lock failed".to_string())?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "INSERT INTO recipe_tombstones (id, deleted_at) VALUES (?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET deleted_at =
+                CASE WHEN excluded.deleted_at > recipe_tombstones.deleted_at
+                THEN excluded.deleted_at ELSE recipe_tombstones.deleted_at END",
+            (id, deleted_at),
+        )
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM recipes WHERE id = ?1 AND updated_at <= ?2",
+            (id, deleted_at),
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())
+}
+
 fn open_library_database(app: &tauri::App) -> Result<LibraryDb, String> {
     let directory = app
         .path()
@@ -1502,6 +1962,27 @@ fn open_library_database(app: &tauri::App) -> Result<LibraryDb, String> {
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let connection =
         Connection::open(directory.join("recipes.sqlite3")).map_err(|error| error.to_string())?;
+    initialise_library_database(&connection)?;
+    Ok(LibraryDb(Mutex::new(connection)))
+}
+
+fn initialise_library_database(connection: &Connection) -> Result<(), String> {
+    // One desktop process owns the connection today, but WAL and a bounded
+    // busy timeout make accidental double launches and future background work
+    // fail predictably rather than corrupting the local library.
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;",
+        )
+        .map_err(|error| error.to_string())?;
+    let schema_version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    if schema_version > LIBRARY_DB_SCHEMA_VERSION {
+        return Err(format!(
+            "recipe database schema {schema_version} is newer than this app supports"
+        ));
+    }
     connection
         .execute_batch(
             "
@@ -1531,10 +2012,38 @@ fn open_library_database(app: &tauri::App) -> Result<LibraryDb, String> {
         );
         CREATE INDEX IF NOT EXISTS write_journals_by_backup
             ON write_journals (backup_id);
+        CREATE TABLE IF NOT EXISTS local_capability_matrices (
+            id TEXT PRIMARY KEY NOT NULL,
+            manufacturer TEXT NOT NULL,
+            model TEXT NOT NULL,
+            firmware TEXT NOT NULL,
+            usb_ids TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            payload TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS local_capability_matrices_by_identity
+            ON local_capability_matrices (manufacturer, model, firmware, updated_at DESC);
         ",
         )
         .map_err(|error| error.to_string())?;
-    Ok(LibraryDb(Mutex::new(connection)))
+    if schema_version < 2 {
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS recipe_tombstones (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    deleted_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS write_journals_by_state
+                    ON write_journals (state, created_at DESC);
+                ",
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    connection
+        .pragma_update(None, "user_version", LIBRARY_DB_SCHEMA_VERSION)
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn parse_usb_id(value: &str) -> Result<UsbId, String> {
@@ -1546,6 +2055,25 @@ fn parse_usb_id(value: &str) -> Result<UsbId, String> {
     let product_id = u16::from_str_radix(product_id, 16)
         .map_err(|_| "USB product ID is not hexadecimal".to_string())?;
     Ok(UsbId::new(vendor_id, product_id))
+}
+
+/// Source links are attribution only. Keep their scheme constrained here as
+/// well as in the frontend because local capability matrices are persisted and
+/// may later be displayed by a different view.
+fn is_safe_external_url(value: &str) -> bool {
+    let value = value.trim();
+    let authority = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"));
+    authority.is_some_and(|authority| {
+        !authority.is_empty()
+            && !authority.starts_with('/')
+            && authority
+                .split('/')
+                .next()
+                .is_some_and(|host| !host.is_empty())
+            && !value.chars().any(char::is_whitespace)
+    })
 }
 
 fn decode_ptp_string(value: &[u8]) -> Option<String> {
@@ -1573,14 +2101,7 @@ mod tests {
 
     fn memory_database() -> LibraryDb {
         let connection = Connection::open_in_memory().unwrap();
-        connection
-            .execute_batch(
-                "
-                CREATE TABLE camera_backups (id TEXT PRIMARY KEY, usb_id TEXT, slot INTEGER, captured_at TEXT, payload TEXT);
-                CREATE TABLE write_journals (id TEXT PRIMARY KEY, backup_id TEXT, usb_id TEXT, slot INTEGER, created_at TEXT, state TEXT, error TEXT, payload TEXT);
-                ",
-            )
-            .unwrap();
+        initialise_library_database(&connection).unwrap();
         LibraryDb(Mutex::new(connection))
     }
 
@@ -1640,6 +2161,215 @@ mod tests {
                 .state,
             "rolled_back"
         );
+    }
+
+    fn local_matrix() -> LocalCapabilityMatrix {
+        LocalCapabilityMatrix {
+            schema_version: 1,
+            id: "fujifilm-xm5-1.30-local".into(),
+            manufacturer: "FUJIFILM".into(),
+            model: "X-M5".into(),
+            firmware: "1.30".into(),
+            usb_ids: vec!["04CB:030C".into()],
+            custom_slots: vec!["C1".into(), "C2".into(), "C3".into(), "C4".into()],
+            source_url: Some("https://fujifilm-x.com/".into()),
+            source_kind: "official".into(),
+            evidence_summary: "Read-only observation.".into(),
+            last_verified_at: None,
+            created_at: 0,
+            updated_at: 0,
+            properties: vec![LocalCapabilityMatrixProperty {
+                key: "filmSimulation".into(),
+                label_zh: "軟片模擬".into(),
+                label_en: "Film Simulation".into(),
+                code: "D192".into(),
+                scope: "custom_slot".into(),
+                status: "read_detected_unverified".into(),
+                notes: "Read-only observation.".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn local_capability_matrix_persists_without_unlocking_writes() {
+        let database = memory_database();
+        let saved = save_local_capability_matrix_inner(local_matrix(), &database).unwrap();
+        assert!(saved.created_at > 0);
+        assert!(saved.updated_at >= saved.created_at);
+        let listed = list_local_capability_matrices_inner(&database).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].model, "X-M5");
+        assert_eq!(listed[0].properties[0].status, "read_detected_unverified");
+
+        let mut unsafe_matrix = local_matrix();
+        unsafe_matrix.properties[0].status = "write_verified".into();
+        assert!(save_local_capability_matrix_inner(unsafe_matrix, &database)
+            .unwrap_err()
+            .contains("cannot be locally marked write verified"));
+    }
+
+    #[test]
+    fn local_capability_matrix_rejects_unsafe_sources_and_invalid_ptp_codes() {
+        let database = memory_database();
+        let mut unsafe_source = local_matrix();
+        unsafe_source.source_url = Some("file:///tmp/evidence".into());
+        assert!(save_local_capability_matrix_inner(unsafe_source, &database)
+            .unwrap_err()
+            .contains("must use http or https"));
+
+        let mut invalid_code = local_matrix();
+        invalid_code.properties[0].code = "D19".into();
+        assert!(save_local_capability_matrix_inner(invalid_code, &database)
+            .unwrap_err()
+            .contains("four hexadecimal"));
+    }
+
+    #[test]
+    fn journal_recovery_is_visible_until_a_verified_manual_restore_acknowledges_it() {
+        let database = memory_database();
+        let journal = WriteJournal {
+            id: "pending-journal".into(),
+            backup_id: "backup-pending".into(),
+            usb_id: "04CB:030C".into(),
+            slot: 4,
+            created_at: 10,
+            state: "recovery_failed".into(),
+            error: Some("cable disconnected".into()),
+        };
+        save_write_journal(&database, &journal).unwrap();
+        let pending = list_pending_write_journals_inner(&database).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].backup_id, "backup-pending");
+
+        mark_pending_journals_recovered(&database, "backup-pending").unwrap();
+        assert!(list_pending_write_journals_inner(&database)
+            .unwrap()
+            .is_empty());
+    }
+
+    fn recipe_document(id: &str, updated_at: &str, name: &str) -> RecipeDocument {
+        RecipeDocument(serde_json::json!({
+            "id": id,
+            "updatedAt": updated_at,
+            "name": name,
+        }))
+    }
+
+    #[test]
+    fn recipe_upserts_preserve_newer_edits_and_tombstones_block_stale_resurrection() {
+        let database = memory_database();
+        upsert_recipes_inner(
+            vec![recipe_document(
+                "recipe-1",
+                "2026-09-05T10:00:00.000Z",
+                "first",
+            )],
+            &database,
+        )
+        .unwrap();
+        upsert_recipes_inner(
+            vec![recipe_document(
+                "recipe-1",
+                "2026-09-05T11:00:00.000Z",
+                "newer",
+            )],
+            &database,
+        )
+        .unwrap();
+        upsert_recipes_inner(
+            vec![recipe_document(
+                "recipe-1",
+                "2026-09-05T10:30:00.000Z",
+                "stale",
+            )],
+            &database,
+        )
+        .unwrap();
+        let connection = database.0.lock().unwrap();
+        let payload: String = connection
+            .query_row(
+                "SELECT payload FROM recipes WHERE id = 'recipe-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&payload).unwrap()["name"],
+            "newer"
+        );
+        drop(connection);
+
+        delete_recipe_inner(
+            "recipe-1".into(),
+            "2026-09-05T12:00:00.000Z".into(),
+            &database,
+        )
+        .unwrap();
+        upsert_recipes_inner(
+            vec![recipe_document(
+                "recipe-1",
+                "2026-09-05T11:30:00.000Z",
+                "stale",
+            )],
+            &database,
+        )
+        .unwrap();
+        let connection = database.0.lock().unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM recipes WHERE id = 'recipe-1'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        drop(connection);
+
+        upsert_recipes_inner(
+            vec![recipe_document(
+                "recipe-1",
+                "2026-09-05T12:01:00.000Z",
+                "restored",
+            )],
+            &database,
+        )
+        .unwrap();
+        let connection = database.0.lock().unwrap();
+        let payload: String = connection
+            .query_row(
+                "SELECT payload FROM recipes WHERE id = 'recipe-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&payload).unwrap()["name"],
+            "restored"
+        );
+    }
+
+    #[test]
+    fn library_database_initialization_records_a_schema_version() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialise_library_database(&connection).unwrap();
+        let schema_version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(schema_version, LIBRARY_DB_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn capability_catalog_lists_known_models_without_promoting_probe_only_bodies() {
+        let catalog = list_camera_capability_catalog();
+        assert!(catalog.len() > 10);
+        let xm5 = catalog.iter().find(|entry| entry.model == "X-M5").unwrap();
+        assert_eq!(xm5.access, "Experimental recipe writes");
+        assert!(xm5.trusted_record_id.is_some());
+        let xs20 = catalog.iter().find(|entry| entry.model == "X-S20").unwrap();
+        assert_eq!(xs20.access, "Probe required");
+        assert!(xs20.trusted_record_id.is_none());
     }
 
     #[test]
@@ -1805,6 +2535,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_status,
             xm5_capability_record,
+            list_camera_capability_catalog,
             discover_cameras,
             probe_camera_device_info,
             import_fujifilm_image_recipe,
@@ -1816,9 +2547,14 @@ pub fn run() {
             clear_xm5_custom_slot,
             read_xm5_installed_presets,
             list_camera_backups,
+            list_pending_write_journals,
             restore_xm5_backup,
             list_recipes,
-            replace_recipes
+            upsert_recipes,
+            delete_recipe,
+            list_local_capability_matrices,
+            save_local_capability_matrix,
+            delete_local_capability_matrix
         ])
         .run(tauri::generate_context!())
         .expect("error while running Fuji Recipe Manager");

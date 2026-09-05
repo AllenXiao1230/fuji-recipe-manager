@@ -12,6 +12,17 @@ export interface CameraDiscovery {
   ptpInterfaceDetected: boolean;
   writeEnabled: boolean;
 }
+export interface CameraCapabilityCatalogEntry {
+  model: string;
+  family: string;
+  access:
+    | "Probe required"
+    | "Read-only PTP verified"
+    | "Experimental recipe writes"
+    | "Recipe writes verified";
+  trustedRecordId?: string;
+  trustedFirmware?: string;
+}
 export interface PtpDeviceInfoResult {
   usbId: string;
   interfaceNumber: number;
@@ -22,6 +33,11 @@ export interface PtpDeviceInfoResult {
   manufacturer: string;
   model: string;
   deviceVersion: string;
+  capabilityStateKey:
+    | "exact_experimental"
+    | "firmware_probe_only"
+    | "probe_only"
+    | "not_fujifilm";
   capabilityState: string;
   capabilityRecordId?: string;
   capabilityNextAction: string;
@@ -94,6 +110,39 @@ export interface CameraCapabilityRecord {
   validation: { method: string; testedOn: string; scope: string };
   properties: CameraCapabilityProperty[];
 }
+export type LocalCapabilityPropertyStatus =
+  | "read_detected_unverified"
+  | "write_rejected"
+  | "blocked_unknown";
+export interface LocalCapabilityMatrixProperty {
+  key: string;
+  labelZh: string;
+  labelEn: string;
+  code: string;
+  scope: "custom_slot" | "global" | "unknown";
+  status: LocalCapabilityPropertyStatus;
+  notes: string;
+}
+/**
+ * Locally documented observations for a camera identity. These records cannot
+ * enable PTP writes; only a trusted, hardware-verified capability record can.
+ */
+export interface LocalCapabilityMatrix {
+  schemaVersion: 1;
+  id: string;
+  manufacturer: "FUJIFILM";
+  model: string;
+  firmware: string;
+  usbIds: string[];
+  customSlots: string[];
+  sourceUrl?: string;
+  sourceKind: "official" | "community" | "local_probe";
+  evidenceSummary: string;
+  lastVerifiedAt?: number;
+  createdAt: number;
+  updatedAt: number;
+  properties: LocalCapabilityMatrixProperty[];
+}
 export interface ImageRecipeFieldStatus {
   key: string;
   status: "recognized" | "unavailable";
@@ -110,6 +159,15 @@ export interface ImageRecipeImport {
 export interface RafPreviewStageResult {
   state: "staged";
   recoveryAction?: string;
+}
+export interface WriteJournalSummary {
+  id: string;
+  backupId: string;
+  usbId: string;
+  slot: number;
+  createdAt: number;
+  state: "writing" | "recovery_failed";
+  error?: string;
 }
 
 export async function discoverCameras(): Promise<CameraDiscovery[]> {
@@ -179,6 +237,30 @@ export async function getXm5CapabilityRecord(): Promise<CameraCapabilityRecord> 
   return invoke<CameraCapabilityRecord>("xm5_capability_record");
 }
 
+export async function listCameraCapabilityCatalog(): Promise<
+  CameraCapabilityCatalogEntry[]
+> {
+  return invoke<CameraCapabilityCatalogEntry[]>("list_camera_capability_catalog");
+}
+
+export async function listLocalCapabilityMatrices(): Promise<
+  LocalCapabilityMatrix[]
+> {
+  return invoke<LocalCapabilityMatrix[]>("list_local_capability_matrices");
+}
+
+export async function saveLocalCapabilityMatrix(
+  matrix: LocalCapabilityMatrix,
+): Promise<LocalCapabilityMatrix> {
+  return invoke<LocalCapabilityMatrix>("save_local_capability_matrix", {
+    matrix,
+  });
+}
+
+export async function deleteLocalCapabilityMatrix(id: string): Promise<void> {
+  return invoke<void>("delete_local_capability_matrix", { id });
+}
+
 export async function importFujifilmImageRecipe(
   path: string,
 ): Promise<ImageRecipeImport> {
@@ -218,6 +300,10 @@ export async function restoreXm5Backup(
   return invoke<CameraBackupSummary>("restore_xm5_backup", { usbId, backupId });
 }
 
+export async function listPendingWriteJournals(): Promise<WriteJournalSummary[]> {
+  return invoke<WriteJournalSummary[]>("list_pending_write_journals");
+}
+
 export const isDesktop = "__TAURI_INTERNALS__" in window;
 
 export async function loadDesktopRecipes(): Promise<Recipe[]> {
@@ -225,5 +311,12 @@ export async function loadDesktopRecipes(): Promise<Recipe[]> {
 }
 
 export async function saveDesktopRecipes(recipes: Recipe[]): Promise<void> {
-  return invoke("replace_recipes", { recipes });
+  return invoke("upsert_recipes", { recipes });
+}
+
+export async function deleteDesktopRecipe(
+  id: string,
+  deletedAt: string,
+): Promise<void> {
+  return invoke("delete_recipe", { id, deletedAt });
 }

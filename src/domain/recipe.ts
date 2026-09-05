@@ -1,26 +1,32 @@
-export const filmSimulations = [
-  "AUTO",
+/**
+ * The 20 concrete Fujifilm film simulations validated for X-M5 firmware 1.30.
+ * `AUTO` is deliberately excluded: it is a camera mode, not a reusable Recipe
+ * look, and its custom-slot encoding has not been write-verified.
+ */
+export const supportedFilmSimulations = [
   "PROVIA",
   "VELVIA",
   "ASTIA",
-  "CLASSIC_CHROME",
-  "REALA_ACE",
   "PRO_NEG_HI",
   "PRO_NEG_STD",
-  "CLASSIC_NEGATIVE",
-  "NOSTALGIC_NEGATIVE",
-  "ETERNA",
-  "ETERNA_BLEACH_BYPASS",
-  "ACROS",
-  "ACROS_YE",
-  "ACROS_R",
-  "ACROS_G",
   "MONOCHROME",
   "MONOCHROME_YE",
   "MONOCHROME_R",
   "MONOCHROME_G",
   "SEPIA",
+  "CLASSIC_CHROME",
+  "ACROS",
+  "ACROS_YE",
+  "ACROS_R",
+  "ACROS_G",
+  "ETERNA",
+  "CLASSIC_NEGATIVE",
+  "ETERNA_BLEACH_BYPASS",
+  "NOSTALGIC_NEGATIVE",
+  "REALA_ACE",
 ] as const;
+
+export const filmSimulations = ["AUTO", ...supportedFilmSimulations] as const;
 export type FilmSimulation = (typeof filmSimulations)[number];
 export const dynamicRanges = ["AUTO", "DR100", "DR200", "DR400"] as const;
 export const strengths = ["OFF", "WEAK", "STRONG"] as const;
@@ -144,28 +150,7 @@ export const shutterTypes = [
   "E_FRONT_PLUS_MECHANICAL_PLUS_ELECTRONIC",
 ] as const;
 
-export const xm5WritableFilmSimulations = [
-  "PROVIA",
-  "VELVIA",
-  "ASTIA",
-  "PRO_NEG_HI",
-  "PRO_NEG_STD",
-  "CLASSIC_CHROME",
-  "ACROS",
-  "ACROS_YE",
-  "ACROS_R",
-  "ACROS_G",
-  "MONOCHROME",
-  "MONOCHROME_YE",
-  "MONOCHROME_R",
-  "MONOCHROME_G",
-  "SEPIA",
-  "ETERNA",
-  "ETERNA_BLEACH_BYPASS",
-  "CLASSIC_NEGATIVE",
-  "NOSTALGIC_NEGATIVE",
-  "REALA_ACE",
-] as const;
+export const xm5WritableFilmSimulations = supportedFilmSimulations;
 export const xm5WritableDynamicRanges = ["AUTO", "DR100", "DR200", "DR400"] as const;
 export const xm5WritableWhiteBalances = [
   "WHITE_PRIORITY",

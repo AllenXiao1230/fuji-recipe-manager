@@ -192,6 +192,17 @@ pub enum CapabilityRecordState {
 }
 
 impl CapabilityRecordState {
+    /// Stable machine-readable state for frontend gates and stored diagnostics.
+    /// `label` may be translated or clarified without changing program logic.
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::ExactExperimental => "exact_experimental",
+            Self::FirmwareProbeOnly => "firmware_probe_only",
+            Self::ProbeOnly => "probe_only",
+            Self::NotFujifilm => "not_fujifilm",
+        }
+    }
+
     pub const fn label(self) -> &'static str {
         match self {
             Self::ExactExperimental => "Exact experimental capability record",

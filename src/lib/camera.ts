@@ -48,6 +48,24 @@ export interface PtpPropertyValueResult {
   propertyCode: string;
   valueHex: string;
 }
+export interface Xm5UnverifiedPropertyAuditEntry {
+  propertyCode: string;
+  key: string;
+  label: string;
+  valueHex?: string;
+  valueError?: string;
+  descriptorDataType?: string;
+  descriptorWritable?: boolean;
+  descriptorDefault?: string;
+  descriptorCurrent?: string;
+  descriptorError?: string;
+}
+export interface Xm5UnverifiedPropertyAuditResult {
+  usbId: string;
+  model: string;
+  firmware: string;
+  properties: Xm5UnverifiedPropertyAuditEntry[];
+}
 export interface SlotSelectionResult {
   usbId: string;
   slot: number;
@@ -179,6 +197,15 @@ export async function probeCameraDeviceInfo(
   usbId: string,
 ): Promise<PtpDeviceInfoResult> {
   return invoke<PtpDeviceInfoResult>("probe_camera_device_info", { usbId });
+}
+
+export async function auditXm5UnverifiedProperties(
+  usbId: string,
+): Promise<Xm5UnverifiedPropertyAuditResult> {
+  return invoke<Xm5UnverifiedPropertyAuditResult>(
+    "audit_xm5_unverified_properties",
+    { usbId },
+  );
 }
 
 export async function readCameraSlotSelector(

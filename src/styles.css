@@ -1183,6 +1183,11 @@ textarea::placeholder {
 .matrix-identity-actions label {
   flex: 1;
 }
+.matrix-identity-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
 .matrix-identity-actions select,
 .matrix-identity-grid input,
 .matrix-property-labels input,
@@ -1505,6 +1510,9 @@ textarea::placeholder {
   .matrix-identity-actions,
   .matrix-properties-heading {
     align-items: stretch;
+    flex-direction: column;
+  }
+  .matrix-identity-buttons {
     flex-direction: column;
   }
   .matrix-identity-grid,

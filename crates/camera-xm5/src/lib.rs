@@ -91,6 +91,119 @@ pub fn capability_record() -> &'static Xm5CapabilityRecord {
     })
 }
 
+/// Fixed-scope candidates for read-only research. Keeping this list in the
+/// model crate makes the CLI and Tauri UI audit the same properties and avoids
+/// turning either surface into a generic vendor-property writer.
+pub fn unverified_property_audit_candidates() -> &'static [(u16, &'static str, &'static str)] {
+    &[
+        (
+            0xD191,
+            "reservedPresetD191",
+            "Preset reserved field / 自訂檔保留欄位",
+        ),
+        (
+            0xD1A5,
+            "reservedPresetD1A5",
+            "Preset reserved field / 自訂檔保留欄位",
+        ),
+        (
+            0xD018,
+            "unknownVendorD018",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD01C,
+            "unknownVendorD01C",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD023,
+            "unknownVendorD023",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD029,
+            "unknownVendorD029",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD02E,
+            "unknownVendorD02E",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD030,
+            "unknownVendorD030",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD031,
+            "unknownVendorD031",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD032,
+            "unknownVendorD032",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD041,
+            "unknownVendorD041",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD16E,
+            "unknownVendorD16E",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD208,
+            "unknownVendorD208",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD20B,
+            "unknownVendorD20B",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD212,
+            "unknownVendorD212",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD21C,
+            "unknownVendorD21C",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD320,
+            "unknownVendorD320",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD321,
+            "unknownVendorD321",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD34D,
+            "unknownVendorD34D",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD36A,
+            "unknownVendorD36A",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+        (
+            0xD36B,
+            "unknownVendorD36B",
+            "Unknown Fujifilm vendor property / 未知 Fujifilm 廠商屬性",
+        ),
+    ]
+}
+
 /// Recipe values accepted by the X-M5 encoder. This lives in the camera crate
 /// rather than the Tauri application so model-specific wire encodings cannot
 /// accidentally be reused for a different Fujifilm generation.
@@ -630,6 +743,31 @@ mod tests {
             .iter()
             .any(|property| property.key == "longExposureNoiseReduction"
                 && property.status == "write_rejected"));
+        assert!(record
+            .properties
+            .iter()
+            .any(|property| property.key == "reservedPresetD191"
+                && property.code == "D191"
+                && property.status == "read_detected_unverified"));
+        assert!(record
+            .properties
+            .iter()
+            .any(|property| property.key == "reservedPresetD1A5"
+                && property.code == "D1A5"
+                && property.status == "read_detected_unverified"));
+    }
+
+    #[test]
+    fn unverified_audit_candidates_are_fixed_and_unique() {
+        let candidates = unverified_property_audit_candidates();
+        assert_eq!(candidates.len(), 21);
+        assert_eq!(candidates[0].0, 0xD191);
+        assert_eq!(candidates[1].0, 0xD1A5);
+        let unique = candidates
+            .iter()
+            .map(|(code, _, _)| *code)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(unique.len(), candidates.len());
     }
 
     #[test]

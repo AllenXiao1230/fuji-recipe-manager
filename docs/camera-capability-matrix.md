@@ -62,7 +62,7 @@ and shows every property status before an X-M5 import.
 | Write verified, narrow payload | Image Size (`S 3:2`, `D18E=01 00`; `S 16:9`, `D18E=02 00`; `S 1:1`, `D18E=03 00`; `M 3:2`, `D18E=04 00`; `M 16:9`, `D18E=05 00`; `M 1:1`, `D18E=06 00`; `L 3:2`, `D18E=07 00`; `L 16:9`, `D18E=08 00`; `L 1:1`, `D18E=09 00`); Image Quality (`RAW`, `D18F=01 00`; `FINE`, `D18F=02 00`; `NORMAL`, `D18F=03 00`; `FINE+RAW`, `D18F=04 00`; `NORMAL+RAW`, `D18F=05 00`) | The properties may be readable with other values, but those payload encodings stay blocked until they have their own reversible record. |
 | Mode-dependent / blocked | `P 3:2`, `P 16:9`, `P 1:1` at 1.25× crop | Fujifilm exposes these only in Sports Finder Mode or 1.25× high-speed burst. The prerequisite drive/crop state is not yet a C-slot Recipe property, so the app shows the choices but cannot write them. |
 | Rejected by camera | Long Exposure NR (`D1A3`); Monochromatic Color (`D193`); Monochromatic MG (`D194`) | The tested writes received PTP `201C`. Both monochrome properties remain locked; any future test must use ACROS or MONOCHROME as its prerequisite. |
-| Detected but unverified | Global `D001/D007/D008/D00A/D00B/D00C/D017/D104` | Read/current-value transport observations do not authorise a Recipe write. |
+| Detected but unverified | Global vendor `D001/D007/D008/D00A/D00B/D00C/D017/D104` plus standard PTP `5005/5015`; reserved preset `D191` and `D1A5` | Read/current-value transport observations do not authorise a Recipe write. The reserved fields are retained only as raw snapshot metadata. |
 | Unknown / blocked | Other scanned vendor properties | Never exposed as writable controls. |
 
 ### Raw snapshot boundary
@@ -77,6 +77,12 @@ For unverified Image Size and Image Quality values, first set the desired value
 manually on a disposable C slot and capture it with
 `ptp-capture-xm5-image-payload`. This only produces a candidate mapping; the
 matrix remains locked until reversible hardware verification is retained.
+
+For `D191`, `D1A5`, and the blocked vendor list, use the fixed-scope
+`ptp-audit-xm5-unverified` command. It records raw values and standard
+descriptor metadata without selecting a slot or sending a setting write. See
+the [unverified-property research procedure](xm5-unverified-property-research.md)
+before collecting or sharing a trace.
 
 ### Dependencies recorded for X-M5
 

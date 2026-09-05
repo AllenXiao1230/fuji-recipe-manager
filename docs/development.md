@@ -117,9 +117,14 @@ For a physical X-M5, the next safe manual check is:
 
 ```bash
 cargo run -p fuji-test -- ptp-descriptor D18C
+cargo run -p fuji-test -- ptp-audit-xm5-unverified
 ```
 
-This reads the descriptor metadata for the custom-slot selector. It can reveal the camera's current selected-slot scalar as part of the standard descriptor dataset, but it does not select a slot, read C1-C4 recipes, or write a setting. Do not run property probes while another camera application is connected.
+The first command reads descriptor metadata for the custom-slot selector. The
+second collects raw values and descriptors for `D191`, `D1A5`, and the blocked
+vendor-code list. Both commands are read-only: they do not select a slot, read
+C1-C4 recipes, or write a setting. Do not run property probes while another
+camera application is connected.
 
 On the physical X-M5 firmware 1.30, `GetDevicePropDesc(D18C)` returns `0x2002` after an empty data phase. `GetDevicePropValue(D18C)` succeeds and returns two raw bytes (`01 00`). Treat that as a transport observation only: the value encoding and any relationship to a custom slot still need controlled, reversible calibration before being shown as C1-C4 data.
 

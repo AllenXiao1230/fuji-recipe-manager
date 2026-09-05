@@ -122,6 +122,30 @@ struct PtpPropertyValueResult {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct Xm5UnverifiedPropertyAuditResult {
+    usb_id: String,
+    model: String,
+    firmware: String,
+    properties: Vec<Xm5UnverifiedPropertyAuditEntry>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Xm5UnverifiedPropertyAuditEntry {
+    property_code: String,
+    key: String,
+    label: String,
+    value_hex: Option<String>,
+    value_error: Option<String>,
+    descriptor_data_type: Option<String>,
+    descriptor_writable: Option<bool>,
+    descriptor_default: Option<String>,
+    descriptor_current: Option<String>,
+    descriptor_error: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SlotSelectionResult {
     usb_id: String,
     slot: u16,
@@ -326,6 +350,76 @@ fn probe_camera_device_info(usb_id: String) -> Result<PtpDeviceInfoResult, Strin
         capability_state: capability.state.label().to_string(),
         capability_record_id: capability.record_id.map(str::to_string),
         capability_next_action: capability.state.next_action().to_string(),
+    })
+}
+
+/// Collect fixed-scope evidence for X-M5 properties that are not writable by
+/// the application. This command only performs standard PTP reads and is
+/// intentionally gated to the exact model/firmware record. A successful
+/// descriptor or value read never changes the capability write allow-list.
+#[tauri::command]
+fn audit_xm5_unverified_properties(
+    usb_id: String,
+) -> Result<Xm5UnverifiedPropertyAuditResult, String> {
+    let id = parse_usb_id(&usb_id)?;
+    let device_info =
+        usb_transport::probe_ptp_device_info(id).map_err(|error| error.to_string())?;
+    let capability = camera_fujifilm::resolve_capability_record(
+        id,
+        &device_info.model,
+        &device_info.device_version,
+    );
+    if capability.state != camera_fujifilm::CapabilityRecordState::ExactExperimental {
+        return Err(format!(
+            "{}: {}",
+            capability.state.label(),
+            capability.state.next_action()
+        ));
+    }
+
+    let properties = camera_xm5::unverified_property_audit_candidates()
+        .iter()
+        .map(|(code, key, label)| {
+            let (value_hex, value_error) = match usb_transport::probe_ptp_property_value(id, *code)
+            {
+                Ok(probe) => (Some(format_hex(&probe.value)), None),
+                Err(error) => (None, Some(error.to_string())),
+            };
+            let (
+                descriptor_data_type,
+                descriptor_writable,
+                descriptor_default,
+                descriptor_current,
+                descriptor_error,
+            ) = match usb_transport::probe_ptp_property_descriptor(id, *code) {
+                Ok(probe) => (
+                    Some(format!("{:04X}", probe.data_type)),
+                    Some(probe.writable),
+                    Some(format!("{:?}", probe.factory_default)),
+                    Some(format!("{:?}", probe.current_value)),
+                    None,
+                ),
+                Err(error) => (None, None, None, None, Some(error.to_string())),
+            };
+            Xm5UnverifiedPropertyAuditEntry {
+                property_code: format!("{:04X}", code),
+                key: (*key).to_string(),
+                label: (*label).to_string(),
+                value_hex,
+                value_error,
+                descriptor_data_type,
+                descriptor_writable,
+                descriptor_default,
+                descriptor_current,
+                descriptor_error,
+            }
+        })
+        .collect();
+    Ok(Xm5UnverifiedPropertyAuditResult {
+        usb_id: id.to_string(),
+        model: device_info.model,
+        firmware: device_info.device_version,
+        properties,
     })
 }
 
@@ -2538,6 +2632,7 @@ pub fn run() {
             list_camera_capability_catalog,
             discover_cameras,
             probe_camera_device_info,
+            audit_xm5_unverified_properties,
             import_fujifilm_image_recipe,
             stage_raf_preview,
             read_camera_slot_selector,

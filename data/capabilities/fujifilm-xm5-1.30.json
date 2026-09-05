@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "recordId": "fujifilm-xm5-04cb-030c-fw-1.30",
   "manufacturer": "FUJIFILM",
   "model": "X-M5",
@@ -12,6 +12,17 @@
     "scope": "A disposable C slot; the previously active slot and every captured property were restored after each test."
   },
   "properties": [
+    {
+      "key": "customSlotSelector",
+      "code": "D18C",
+      "scope": "custom_slot",
+      "labelZh": "自訂檔槽位選擇器",
+      "labelEn": "Custom Slot Selector",
+      "status": "write_verified",
+      "verifiedValues": "C1–C4 transport control only",
+      "dependencies": [],
+      "notes": "Internal transport control, not a Recipe setting. It is selected before a verified custom-slot transaction and restored to the previously active slot afterwards."
+    },
     {
       "key": "presetName",
       "code": "D18D",
@@ -44,6 +55,17 @@
       "verifiedValues": "Auto, DR100, DR200, DR400",
       "dependencies": [],
       "notes": "Auto (FFFF) passed C4 write/read-back/captured-value restore on 2026-09-02. Camera ISO constraints still apply to fixed DR values."
+    },
+    {
+      "key": "reservedPresetD191",
+      "code": "D191",
+      "scope": "custom_slot",
+      "labelZh": "自訂檔保留欄位 D191",
+      "labelEn": "Custom Preset Reserved Field D191",
+      "status": "read_detected_unverified",
+      "verifiedValues": "Raw value capture only",
+      "dependencies": [],
+      "notes": "Observed in the bounded C-slot snapshot. Other bodies have reported a constant zero, but that is not X-M5 evidence. Never emitted by the encoder, automatic recovery allow-list, or raw-snapshot replay."
     },
     {
       "key": "grain",
@@ -211,6 +233,17 @@
       "notes": ""
     },
     {
+      "key": "reservedPresetD1A5",
+      "code": "D1A5",
+      "scope": "custom_slot",
+      "labelZh": "自訂檔保留欄位 D1A5",
+      "labelEn": "Custom Preset Reserved Field D1A5",
+      "status": "read_detected_unverified",
+      "verifiedValues": "Raw value capture only",
+      "dependencies": [],
+      "notes": "Observed in the bounded C-slot snapshot. Other bodies have reported a constant seven, but that is not X-M5 evidence. Never emitted by the encoder, automatic recovery allow-list, or raw-snapshot replay."
+    },
+    {
       "key": "imageSize",
       "code": "D18E",
       "scope": "custom_slot",
@@ -266,15 +299,26 @@
       "notes": "All direct and ×10 candidate values were rejected with PTP response 201C during the 2026-09-02 ACROS retest; captured values were restored. This property remains locked."
     },
     {
-      "key": "globalProperties",
+      "key": "globalVendorShootingProperties",
       "code": "D001/D007/D008/D00A/D00B/D00C/D017/D104",
       "scope": "global",
-      "labelZh": "全域拍攝屬性",
-      "labelEn": "Global Shooting Properties",
+      "labelZh": "全域 Fujifilm 拍攝屬性",
+      "labelEn": "Global Fujifilm Shooting Properties",
       "status": "read_detected_unverified",
       "verifiedValues": "Read and current-value transport acceptance only",
       "dependencies": [],
-      "notes": "All ten listed properties accepted their captured current values and read back unchanged in the 2026-09-02 test. They are deliberately not written from a Recipe: alternate values and recovery semantics remain unverified."
+      "notes": "Eight vendor properties accepted their captured current values and read back unchanged in the 2026-09-02 test. They are deliberately not written from a Recipe: alternate values and recovery semantics remain unverified."
+    },
+    {
+      "key": "globalStandardPtpProperties",
+      "code": "5005/5015",
+      "scope": "global",
+      "labelZh": "全域標準 PTP 拍攝屬性",
+      "labelEn": "Global Standard PTP Shooting Properties",
+      "status": "read_detected_unverified",
+      "verifiedValues": "White Balance (5005) and Sharpness (5015): current-value transport acceptance only",
+      "dependencies": [],
+      "notes": "The 2026-09-02 read-only current-value test also covered these two standard PTP properties. They were previously counted in narrative text but omitted from the code list. They remain outside Recipe writes."
     },
     {
       "key": "unknownVendorProperties",
@@ -285,7 +329,7 @@
       "status": "blocked_unknown",
       "verifiedValues": "Read-only scan observations",
       "dependencies": [],
-      "notes": "Never exposed for writing until a model-specific, reversible hardware validation record exists."
+      "notes": "Never exposed for writing until a model-specific, reversible hardware validation record exists. Use the fixed-scope `ptp-audit-xm5-unverified` command to capture raw values and descriptor metadata without selecting a slot or sending a write."
     }
   ]
 }

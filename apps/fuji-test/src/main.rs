@@ -52,6 +52,9 @@ fn main() {
     let xm5_descriptor_scan_request = arguments
         .iter()
         .any(|argument| argument == "ptp-scan-xm5-descriptors");
+    let xm5_unverified_audit_request = arguments
+        .iter()
+        .any(|argument| argument == "ptp-audit-xm5-unverified");
     let extended_xm5_verification_request = arguments
         .windows(2)
         .find(|arguments| arguments[0] == "ptp-verify-xm5-extended")
@@ -238,7 +241,7 @@ fn main() {
             .any(|argument| argument == "ptp-verify-xm5-additional-enums")
             && additional_enum_verification_request.is_none())
     {
-        eprintln!("Usage: fuji-test ptp-info | ptp-scan-readonly | ptp-scan-xm5-readonly | ptp-scan-xm5-descriptors | ptp-descriptor D18C | ptp-read D18C | ptp-select-slot C1 | ptp-set-name C1 FRM-TEST | ptp-test-name C2 FRM-TEST | ptp-test-dynamic-range C2 DR100 | ptp-test-signed C2 D19D 0 | ptp-test-u16 C2 D196 1 | ptp-verify-xm5-recipe C4 | ptp-verify-xm5-extended C4 | ptp-verify-xm5-global-current | ptp-verify-xm5-additional-enums C4 | ptp-capture-xm5-image-payload C4 image-size L_16_9 | ptp-verify-xm5-image-payload C4 image-size L_16_9 0x0008");
+        eprintln!("Usage: fuji-test ptp-info | ptp-scan-readonly | ptp-scan-xm5-readonly | ptp-scan-xm5-descriptors | ptp-audit-xm5-unverified | ptp-descriptor D18C | ptp-read D18C | ptp-select-slot C1 | ptp-set-name C1 FRM-TEST | ptp-test-name C2 FRM-TEST | ptp-test-dynamic-range C2 DR100 | ptp-test-signed C2 D19D 0 | ptp-test-u16 C2 D196 1 | ptp-verify-xm5-recipe C4 | ptp-verify-xm5-extended C4 | ptp-verify-xm5-global-current | ptp-verify-xm5-additional-enums C4 | ptp-capture-xm5-image-payload C4 image-size L_16_9 | ptp-verify-xm5-image-payload C4 image-size L_16_9 0x0008");
         std::process::exit(2);
     }
     let backend = PlatformUsbBackend;
@@ -398,6 +401,20 @@ fn main() {
                     std::process::exit(1);
                 };
                 run_xm5_descriptor_scan(device.id);
+                return;
+            }
+            if xm5_unverified_audit_request {
+                let Some(device) = ptp_candidates
+                    .iter()
+                    .copied()
+                    .find(|device| device.id.vendor_id == 0x04CB && device.id.product_id == 0x030C)
+                else {
+                    eprintln!(
+                        "X-M5 (04CB:030C) with a PTP interface was not found; no unverified-property audit was run."
+                    );
+                    std::process::exit(1);
+                };
+                run_xm5_unverified_property_audit(device.id);
                 return;
             }
             if request_ptp_probe {
@@ -977,6 +994,55 @@ fn run_xm5_descriptor_scan(id: camera_core::UsbId) {
     println!(
         "Descriptor scan complete: {described}/{total} descriptors returned; {writable} marked writable; {unavailable} unavailable or rejected. No settings were changed."
     );
+}
+
+/// Collects evidence for properties which are explicitly not writable in the
+/// application.  This uses only standard `GetDevicePropValue` and
+/// `GetDevicePropDesc`; it neither selects a custom slot nor sends
+/// `SetDevicePropValue`.  The output intentionally preserves raw bytes and
+/// descriptor metadata instead of guessing Fujifilm-specific meanings.
+fn run_xm5_unverified_property_audit(id: camera_core::UsbId) {
+    let info = match usb_transport::probe_ptp_device_info(id) {
+        Ok(info) => info,
+        Err(error) => {
+            eprintln!("Cannot begin unverified-property audit: {error}");
+            return;
+        }
+    };
+    println!(
+        "X-M5 unverified-property audit v1: {} {} firmware {}; standard reads only; no slot selection and no writes.",
+        info.manufacturer, info.model, info.device_version
+    );
+    for (code, key, label) in xm5_unverified_property_audit_candidates() {
+        let value = match usb_transport::probe_ptp_property_value(id, *code) {
+            Ok(probe) => format!("ok:{}", format_hex(&probe.value)),
+            Err(error) => format!("error:{error}"),
+        };
+        let descriptor = match usb_transport::probe_ptp_property_descriptor(id, *code) {
+            Ok(probe) => format!(
+                "ok:type={:04X},access={},default={:?},current={:?}",
+                probe.data_type,
+                if probe.writable {
+                    "writable"
+                } else {
+                    "read-only"
+                },
+                probe.factory_default,
+                probe.current_value,
+            ),
+            Err(error) => format!("error:{error}"),
+        };
+        println!("AUDIT {code:04X}\t{key}\t{label}\tvalue={value}\tdescriptor={descriptor}");
+    }
+    println!(
+        "Audit complete. A readable value or writable descriptor flag is evidence only and cannot unlock a Recipe write."
+    );
+}
+
+/// These codes are deliberately fixed rather than accepted from command-line
+/// input, preventing the audit helper from becoming a generic property tool.
+fn xm5_unverified_property_audit_candidates() -> &'static [(u16, &'static str, &'static str)] {
+    camera_xm5::unverified_property_audit_candidates()
 }
 
 fn xm5_preset_property_label(code: u16) -> &'static str {
@@ -1915,4 +1981,26 @@ fn format_hex(bytes: &[u8]) -> String {
         .map(|byte| format!("{byte:02X}"))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unverified_audit_covers_reserved_and_unknown_codes_once() {
+        let candidates = xm5_unverified_property_audit_candidates();
+        assert!(candidates
+            .iter()
+            .any(|(code, key, _)| { *code == 0xD191 && *key == "reservedPresetD191" }));
+        assert!(candidates
+            .iter()
+            .any(|(code, key, _)| { *code == 0xD1A5 && *key == "reservedPresetD1A5" }));
+        let unique = candidates
+            .iter()
+            .map(|(code, _, _)| *code)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(unique.len(), candidates.len());
+        assert_eq!(candidates.len(), 21);
+    }
 }

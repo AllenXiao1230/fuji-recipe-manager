@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   deleteLocalCapabilityMatrix,
+  auditXm5UnverifiedProperties,
   isDesktop,
   listLocalCapabilityMatrices,
   probeCameraDeviceInfo,
@@ -179,6 +180,58 @@ export function CapabilityMatrixPanel({
     }
   }
 
+  async function auditUnverifiedProperties() {
+    setBusy(true);
+    setMessage("");
+    try {
+      const usbId = selectedUsbId || cameraCandidates[0]?.usbId;
+      if (!usbId) throw new Error(t("matrixNoCamera"));
+      const audit = await auditXm5UnverifiedProperties(usbId);
+      const auditTimestamp = new Date().toISOString();
+      setDraft((current) => {
+        const byKey = new Map(current.properties.map((property) => [property.key, property]));
+        for (const entry of audit.properties) {
+          const [labelEn, labelZh = labelEn] = entry.label.split(" / ");
+          const observation = [
+            entry.valueHex ? `value=${entry.valueHex}` : `value error=${entry.valueError ?? "unavailable"}`,
+            entry.descriptorDataType
+              ? `descriptor type=${entry.descriptorDataType}, access=${entry.descriptorWritable ? "writable" : "read-only"}`
+              : `descriptor error=${entry.descriptorError ?? "unavailable"}`,
+          ].join("; ");
+          const existing = byKey.get(entry.key);
+          const previousNotes = existing?.notes.split("\nRead-only audit:")[0].trim() ?? "";
+          byKey.set(entry.key, {
+            key: entry.key,
+            labelZh: existing?.labelZh ?? labelZh,
+            labelEn: existing?.labelEn ?? labelEn,
+            code: entry.propertyCode,
+            scope: existing?.scope ?? (entry.key.startsWith("reservedPreset") ? "custom_slot" : "unknown"),
+            status: existing?.status ?? (entry.key.startsWith("reservedPreset") ? "read_detected_unverified" : "blocked_unknown"),
+            notes: `${previousNotes}${previousNotes ? "\n" : ""}Read-only audit: ${auditTimestamp}; ${observation}`,
+          });
+        }
+        const properties = Array.from(byKey.values());
+        const evidence = current.evidenceSummary.trim();
+        return {
+          ...current,
+          model: audit.model,
+          firmware: audit.firmware,
+          usbIds: [audit.usbId],
+          sourceKind: "local_probe",
+          lastVerifiedAt: Date.now(),
+          evidenceSummary: `${evidence}${evidence ? "\n\n" : ""}Read-only unverified-property audit ${auditTimestamp}: ${audit.properties.length} fixed-scope codes; no slot selection or writes.`.trim(),
+          properties,
+        };
+      });
+      setSelectedUsbId(usbId);
+      setMessage(t("matrixAuditComplete"));
+    } catch (error) {
+      setMessage(String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function save() {
     setBusy(true);
     setMessage("");
@@ -259,7 +312,10 @@ export function CapabilityMatrixPanel({
                 ))}
               </select>
             </label>
-            <button className="secondary" disabled={busy} onClick={scanAndReadIdentity}>{t("matrixReadIdentity")}</button>
+            <div className="matrix-identity-buttons">
+              <button className="secondary" disabled={busy} onClick={scanAndReadIdentity}>{t("matrixReadIdentity")}</button>
+              <button className="secondary" disabled={busy || !selectedUsbId} onClick={auditUnverifiedProperties}>{t("matrixAuditUnverified")}</button>
+            </div>
           </div>
           <div className="matrix-identity-grid">
             <label><span>{t("matrixModel")}</span><input value={draft.model} disabled={busy} onChange={(event) => updateDraft({ model: event.target.value })} /></label>

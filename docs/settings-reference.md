@@ -59,6 +59,17 @@ Large size before the Off command. Highlight and Shadow below -2.0 are
 rejected by the camera with PTP `201C`, so the editor and writer limit those
 two controls to -2.0 through +4.0 in 0.5 steps.
 
+The writer also limits image size to the nine verified standard S/M/L aspect
+ratios and image quality to RAW, FINE, NORMAL, FINE+RAW, and NORMAL+RAW. The
+`P 3:2`, `P 16:9`, and `P 1:1` 1.25× crop choices stay unavailable because
+their Sports Finder or high-speed-burst prerequisite is not yet represented as
+a restorable Recipe transaction. Film Simulation Auto, White Balance Custom
+1–3, Long Exposure NR, and monochrome warm/cool or magenta/green controls are
+stored locally when applicable but are not emitted by the X-M5 writer. See the
+[camera capability matrix](camera-capability-matrix.md) for the authoritative
+per-field state and the [unverified-property research procedure](xm5-unverified-property-research.md)
+for the evidence required to change it.
+
 ## Sources
 
 - [FUJIFILM X-M5 Owner's Manual (English PDF)](https://fujifilm-dsc.com/en-int/manual/x-m5/x-m5_manual_en_s_f.pdf)

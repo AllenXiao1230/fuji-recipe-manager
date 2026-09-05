@@ -1,5 +1,28 @@
 # Release status
 
+Updated: 2026-09-06
+
+## Current support boundary
+
+Only `04CB:030C` / `FUJIFILM X-M5` / firmware `1.30` has an experimental
+Recipe-write path. The bundled capability record is schema version 2 and
+separates four states: `write_verified`, `read_detected_unverified`,
+`write_rejected`, and `blocked_unknown`. A local capability matrix or a
+successful read-only PTP query cannot change this boundary.
+
+The X-M5 1.30 writer supports only the explicitly verified custom-slot fields
+and value encodings listed in the [camera capability matrix](camera-capability-matrix.md).
+Long Exposure NR (`D1A3`) and monochrome warm/cool or magenta/green
+(`D193`/`D194`) remain locked after `201C` rejections. Reserved preset fields
+`D191`/`D1A5`, eight vendor global properties, two standard PTP global
+properties (`5005`/`5015`), and the fixed unknown-vendor list are read-only
+research evidence, never Recipe writes.
+
+The CLI and Capability Matrix page can run a fixed-scope audit of `D191`,
+`D1A5`, and unknown vendor properties. It uses only DeviceInfo,
+GetDevicePropValue, and GetDevicePropDesc; it neither selects a C slot nor
+sends SetDevicePropValue. See the [research procedure](xm5-unverified-property-research.md).
+
 ## Latest X-M5 firmware 1.30 hardware verification
 
 The read-only property scan reported 61 DeviceInfo-advertised properties and
@@ -12,12 +35,11 @@ slot was restored to C1.
 
 Long Exposure NR (`D1A3`) and Monochromatic Color Warm/Cool and
 Green/Magenta (`D193`/`D194`) were rejected with PTP `201C` for every tested
-candidate encoding, so they remain write-locked. Ten identified global
-controls (white balance, sharpness, film simulation, color temperature, white
-balance fine tune, noise reduction, image quality, recording mode, grain
-effect, and focus metering) accepted a write of their current value and read
-back unchanged. This confirms only their transport path; alternate-value
-encodings and global-setting safety are not yet unlocked.
+candidate encoding, so they remain write-locked. Eight vendor global
+properties plus the two standard PTP properties `5005` and `5015` accepted a
+write of their current value and read back unchanged. This confirms only their
+transport path; alternate-value encodings and global-setting safety are not
+unlocked.
 
 The 2026-09-02 retest repeated those outcomes on C4: Long Exposure NR Off and
 On were both rejected and a follow-up read confirmed the captured value did
@@ -101,6 +123,8 @@ values are now enabled in the X-M5 codec and GUI preflight.
 - Per-slot X-M5 clear action: creates the same durable backup and journal as an import, clears the name, writes only neutral values for the 14 verified Recipe properties, verifies every value, and never claims to factory-reset unverified camera settings.
 - macOS `.app` bundle build verified locally. After removing build-output-only Finder/file-provider extended attributes, the App passed strict ad-hoc `codesign` verification; the repackaged `Fuji Recipe Manager_0.1.0_aarch64-adhoc.dmg` passed checksum verification and its mounted App passed the same check. It is deliberately not Developer ID-signed or notarized, and Gatekeeper rejects it as expected.
 - Versioned capability-record resolution requires an exact USB ID, model, and firmware match. All other Fujifilm cameras and firmware versions now have a dedicated `ptp-scan-readonly` path and remain probe-only.
+- Bundled X-M5 capability record schema version 2 explicitly tracks the internal slot selector `D18C`, reserved snapshot-only fields `D191`/`D1A5`, eight vendor-global fields, and two standard global fields. It corrects the previous mixed eight-versus-ten global-property narrative without widening write access.
+- Fixed-scope CLI and GUI read-only audit for `D191`, `D1A5`, and the unknown-vendor property list. Each result preserves raw value and descriptor evidence in local notes; it cannot write a property, select a C slot, or unlock a Recipe field.
 - `.FP1/.FP2/.FP3` local import/export with safe unmapped-field retention and serial-number removal. X RAW Studio round-trip compatibility is not yet a release claim.
 - JPEG/RAF metadata-to-Recipe import with per-field recognised/unavailable results. It is read-only; the present development implementation requires locally installed ExifTool.
 - RAF preview offline preflight and cleanup-oriented Rust transaction abstraction. No vendor camera transport adapter, RAF upload, conversion, or preview JPEG is implemented yet.
@@ -120,7 +144,7 @@ The following work deliberately remains gated on physical hardware for each mode
 8. Validate generated `.FP1/.FP2/.FP3` profiles by importing them into the target X RAW Studio version and record every preserved/unmapped field.
 9. Derive and hardware-validate a model-specific RAF upload/conversion/download/abort adapter before enabling camera-side RAF preview.
 
-Until all six gates pass for a model, its write button must remain disabled. X-M5 is an experimental recovery-capable path, not a production-supported importer.
+Until all applicable gates pass for a model, its write button must remain disabled. X-M5 is an experimental recovery-capable path, not a production-supported importer.
 
 ## Latest physical result
 

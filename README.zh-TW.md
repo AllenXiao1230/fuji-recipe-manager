@@ -116,11 +116,19 @@ cargo run -p fuji-test -- ptp-capture-xm5-image-payload C4 image-size L_16_9
 # 只有顯示 PASS 且恢復作用中槽位後，該選項才能解鎖。
 cargo run -p fuji-test -- ptp-verify-xm5-image-payload C4 image-size L_16_9 0x0008
 
+# 固定範圍的 X-M5 保留／未知屬性證據收集。只讀取值與標準 descriptor，
+# 不選擇 C 槽，也不會送出 SetDevicePropValue。
+cargo run -p fuji-test -- ptp-audit-xm5-unverified
+
 # 在可承受測試的槽位執行實機驗證：逐項寫入／讀回／還原，最後恢復原先作用中槽位
 cargo run -p fuji-test -- ptp-verify-xm5-recipe C4
 ```
 
 `D18C` 是目前 X-M5 實驗性流程所記錄的 Fujifilm 自訂槽位選擇器識別碼。即使描述結果標示為可寫，也只表示相機能力；它不會自行解鎖程式內的寫入功能。X-M5 對這個屬性的標準描述查詢回傳通用錯誤，但直接唯讀取值可成功；這會被記錄為機型專屬的協議觀察，不是寫入許可。
+
+### 安全檢閱尚未驗證的屬性
+
+在桌面 App 開啟「相機能力矩陣」，選取已偵測到的 X-M5，再按下「執行未知屬性唯讀稽核」。結果只會以證據備註寫入本機研究矩陣，不能將欄位提升為可寫入。稽核會驗證為精確的 X-M5 1.30 記錄，且僅包含 `D191`、`D1A5` 與固定的未知廠商代碼清單。收集或分享 trace 前，請先遵守 [X-M5 尚未驗證屬性研究流程](docs/xm5-unverified-property-research.md)。
 
 ## 專案結構
 
@@ -154,8 +162,7 @@ npm run test
 npm run build
 ```
 
-請參考[開發說明](docs/development.md)與[發布狀態](docs/release-status.md)，了解真實硬體驗證門檻。
-各機型支援狀態與擴充規則請參考[相機能力矩陣](docs/camera-capability-matrix.md)。
+請參考[開發說明](docs/development.md)、[發布狀態](docs/release-status.md)、[X-M5 Recipe 設定參考](docs/settings-reference.md)與[X-M5 尚未驗證屬性研究流程](docs/xm5-unverified-property-research.md)，了解真實硬體驗證門檻。各機型支援狀態與擴充規則請參考[相機能力矩陣](docs/camera-capability-matrix.md)。
 
 ## 隱私與商標
 

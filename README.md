@@ -117,12 +117,26 @@ cargo run -p fuji-test -- ptp-capture-xm5-image-payload C4 image-size L_16_9
 # is hexadecimal; only a PASS with active-slot recovery may unlock the value.
 cargo run -p fuji-test -- ptp-verify-xm5-image-payload C4 image-size L_16_9 0x0008
 
+# Fixed-scope evidence collection for reserved and unknown X-M5 properties.
+# It only reads values and standard descriptors; it never selects a C slot or
+# sends SetDevicePropValue.
+cargo run -p fuji-test -- ptp-audit-xm5-unverified
+
 # Physical write validation on a disposable slot. This captures every value,
 # writes/read-backs each test case, restores it, and restores the active slot.
 cargo run -p fuji-test -- ptp-verify-xm5-recipe C4
 ```
 
 `D18C` is the Fujifilm custom-slot selector identifier recorded for the experimental X-M5 path. A descriptor result marked writable only describes camera capability; it never unlocks application writes by itself. The X-M5 returns a general error for its standard descriptor request, while its direct read-only value request succeeds; this is recorded as a model-specific protocol observation, not as write permission.
+
+### Review unverified properties safely
+
+In the desktop app, open **Camera Capability Matrix**, choose the discovered
+X-M5, then select **Run read-only unknown-property audit**. The result is
+added to a local research matrix as evidence notes; it cannot promote a field
+to write support. The audit is gated to the exact X-M5 1.30 record and covers
+only `D191`, `D1A5`, and the fixed unknown-vendor list. Before collecting or
+sharing a trace, follow the [X-M5 unverified-property research procedure](docs/xm5-unverified-property-research.md).
 
 ## Repository layout
 
@@ -156,8 +170,7 @@ npm run test
 npm run build
 ```
 
-See [development notes](docs/development.md), [release status](docs/release-status.md), and the [X-M5 Recipe settings reference](docs/settings-reference.md) for the physical-hardware gate and option source.
-The model-by-model support policy is in the [camera capability matrix](docs/camera-capability-matrix.md).
+See [development notes](docs/development.md), [release status](docs/release-status.md), the [X-M5 Recipe settings reference](docs/settings-reference.md), and the [unverified-property research procedure](docs/xm5-unverified-property-research.md) for the physical-hardware gate and option source. The model-by-model support policy is in the [camera capability matrix](docs/camera-capability-matrix.md).
 
 ## Privacy and trademarks
 

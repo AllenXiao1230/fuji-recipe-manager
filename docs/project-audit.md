@@ -1,6 +1,6 @@
 # Fuji Recipe Manager project audit
 
-Audit date: 2026-09-01. This separates verified implementation facts from
+Audit updated: 2026-09-06. This separates verified implementation facts from
 work that must not be treated as camera-write support until it has been tested
 against a specific model and firmware.
 
@@ -18,6 +18,9 @@ against a specific model and firmware.
   editor from implying universal camera support.
 - The X-M5 physical test evidence covers the currently enabled write path,
   including a 15-field GUI transaction and verified recovery.
+- The capability record now distinguishes internal transport controls,
+  snapshot-only fields, camera-rejected fields, and unknown fields. The new
+  fixed-scope audit records evidence without turning into a generic PTP writer.
 
 ## Completed in this review
 
@@ -47,22 +50,19 @@ against a specific model and firmware.
 
 ## Priority 1 — data integrity and protocol safety
 
-1. **One source of truth for the Recipe library.** The frontend keeps a
-   localStorage cache while the desktop app also persists to SQLite. Define
-   SQLite as the desktop authority, migrate only once from localStorage, and
-   make failures visible with an export/retry path. This reduces stale-cache
-   and concurrent-window overwrite risk.
-2. **Recovery management.** Backups are created safely but need a visible
-   retention policy, export, integrity status, and a non-destructive cleanup
-   control. Never prune the only backup for a slot automatically.
-3. **Interrupted-write recovery.** Surface unfinished write journals at app
-   startup, offer a read-only inspection first, then an explicit verified
-   restore action. This is especially important after cable disconnects or
-   camera sleep.
-4. **Capability data.** Move per-model property IDs, allowed values, firmware
-   ranges, canonical read-back aliases, and human labels into a versioned
-   capability manifest. It should be signed or bundled with the app and have
-   fixtures per model/firmware.
+1. **Recovery retention and export.** SQLite is the desktop authority and
+   interrupted journals are visible with explicit verified restore. The next
+   improvement is a visible backup retention policy, export, integrity status,
+   and non-destructive cleanup. Never prune the only backup for a slot
+   automatically.
+2. **Capability fixtures.** Property IDs, allowed values, firmware identity,
+   canonical read-back aliases, and bilingual labels are bundled in a
+   versioned X-M5 capability record. Add sanitized fixtures and schema checks
+   for each future model/firmware so capability changes can be replayed in CI.
+3. **Evidence promotion discipline.** The read-only audit correctly preserves
+   observations for `D191`, `D1A5`, and unknown codes. Add a reviewed trace
+   attachment workflow before any candidate is promoted to a hardware write
+   test.
 
 ## Priority 2 — camera semantics and usability
 
